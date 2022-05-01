@@ -1,5 +1,5 @@
+from federatedscope.contrib.model import *
 import federatedscope.register as register
-
 
 #def get_model(fed_data):
 def get_model(model_config, local_data, backend='torch'):

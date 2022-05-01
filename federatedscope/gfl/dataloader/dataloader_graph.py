@@ -88,6 +88,7 @@ def load_graphlevel_dataset(config=None):
                 'MUTAG', 'BZR', 'COX2', 'DHFR', 'PTC_MR', 'AIDS', 'NCI1',
                 'Mutagenicity', 'NCI109', 'PTC_MM', 'PTC_FR'
             ]
+            # dict = pk.load('xx.zip')
         elif name.endswith('kddcupv2'.upper()):
             dnames = ['TBD']
         else:
@@ -152,3 +153,12 @@ def load_graphlevel_dataset(config=None):
         }
 
     return data_local_dict, config
+
+
+if __name__ == '__main__':
+     from federatedscope.core.configs.config import global_cfg
+     global_cfg.data.type="graph_multi_domain_kddcupv1"
+     global_cfg.data.root="/mnt/gaodawei.gdw/data"
+     data, config = load_graphlevel_dataset(global_cfg)
+     print()
+
