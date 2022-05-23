@@ -1,9 +1,8 @@
 import logging
 import copy
 import os
-
 import numpy as np
-
+from collections import OrderedDict
 from federatedscope.core.monitors.early_stopper import EarlyStopper
 from federatedscope.core.message import Message
 from federatedscope.core.communication import StandaloneCommManager, gRPCCommManager
@@ -385,10 +384,17 @@ class Server(Worker):
         for each_client in eval_msg_buffer:
             client_eval_results = eval_msg_buffer[each_client]
             for key in client_eval_results.keys():
-                if key not in metrics_all_clients:
-                    metrics_all_clients[key] = list()
-                metrics_all_clients[key].append(float(
-                    client_eval_results[key]))
+                res = client_eval_results[key]
+                if isinstance(res, OrderedDict):
+                    for k, v in res.items():
+                        cur_key = key + '_' + k
+                        if key not in metrics_all_clients:
+                            metrics_all_clients[cur_key] = list()
+                        metrics_all_clients[cur_key].append(float(v))
+                else:
+                    if key not in metrics_all_clients:
+                        metrics_all_clients[key] = list()
+                    metrics_all_clients[key].append(float(res))
         formatted_logs = self._monitor.format_eval_res(
             metrics_all_clients,
             rnd=self.state,

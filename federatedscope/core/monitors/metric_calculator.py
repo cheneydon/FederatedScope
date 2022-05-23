@@ -58,6 +58,8 @@ class MetricCalculator(object):
 
         y_true = ctx.get("{}_y_true".format(ctx.cur_data_split))
         y_prob = ctx.get("{}_y_prob".format(ctx.cur_data_split))
+        if len(y_true) == 0 or len(y_prob) == 0:
+            return y_true, y_prob, []
 
         if torch is not None and isinstance(y_true, torch.Tensor):
             y_true = y_true.detach().cpu().numpy()

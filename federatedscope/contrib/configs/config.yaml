@@ -1,0 +1,45 @@
+use_gpu: True
+device: 2
+seed: 12345
+federate:
+  mode: standalone
+  method: local
+  local_update_steps: 1
+  batch_or_epoch: epoch
+  total_round_num: 1
+  client_num: 2
+data:
+  type: mydata
+  dir:
+    imdb: /mnt/dongchenhe.dch/datasets/imdb/
+    squad: /mnt/dongchenhe.dch/datasets/squad2.0/
+    cnndm: /mnt/dongchenhe.dch/datasets/cnndm/
+  max_seq_len:
+    imdb: 128
+    squad: 128
+    cnndm: 128
+  max_query_len:
+    squad: 64
+  trunc_stride:
+    squad: 32
+  batch_size: 32
+  num_workers: 0
+model:
+  type: mynet
+  bert_type: bert-base-uncased
+  num_dec_layers: 6
+  num_labels: [2]
+optimizer:
+  type: AdamW
+  lr: 3e-5
+  weight_decay: 0.01
+  grad_clip: 1.0
+scheduler:
+  type: mystep
+  warmup_ratio: 0.1
+criterion:
+  type: CrossEntropyLoss
+trainer:
+  type: mytrainer
+  disp_freq: 50
+  val_freq: 500

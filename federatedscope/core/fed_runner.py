@@ -23,11 +23,13 @@ class FedRunner(object):
                  data,
                  server_class=Server,
                  client_class=Client,
-                 config=None):
+                 config=None,
+                 config_client=None):
         self.data = data
         self.server_class = server_class
         self.client_class = client_class
         self.cfg = config
+        self.cfg_client = config_client
 
         self.mode = self.cfg.federate.mode.lower()
         self.gpu_manager = GPUManager(gpu_available=self.cfg.use_gpu,
@@ -135,7 +137,7 @@ class FedRunner(object):
                     msg = self.shared_comm_queue.popleft()
                     self._handle_msg(msg)
 
-            self.server._monitor.compress_raw_res_file()
+            # self.server._monitor.compress_raw_res_file()
 
             return self.server.best_results
 
@@ -215,6 +217,12 @@ class FedRunner(object):
 
         if self.client_class:
             client_specific_config = self.cfg.clone()
+            # Modify the setting according to self.cfg_client in standalone mode
+            if self.cfg_client is not None:
+                client_specific_config.defrost()
+                client_specific_config.merge_from_other_cfg(self.cfg_client.get('client_{}'.format(client_id)))
+                client_specific_config.freeze()
+
             client = self.client_class(
                 ID=client_id,
                 server_id=self.server_id,

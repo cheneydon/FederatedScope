@@ -1,0 +1,29 @@
+client_1:
+  federate:
+    local_update_steps: 3
+  data:
+    type: imdb
+    num_labels: 2
+  eval:
+    sel_metric: 'acc'
+    metrics: ['acc']
+client_2:
+  federate:
+    local_update_steps: 3
+  data:
+    type: squad
+    num_labels: 2
+  eval:
+    sel_metric: 'exact_and_f1'
+    metrics: ['squad']
+    n_best_size: 20  # total number of top-n best predictions to generate
+    max_answer_len: 30  # maximum length of an answer that can be generated
+    null_score_diff_threshold: 0  # if null_score - best_non_null is greater than the threshold predict null
+client_3:
+  federate:
+    local_update_steps: 10
+  data:
+    type: cnndm
+    num_labels: None
+  optimizer:
+    type: AdamW
