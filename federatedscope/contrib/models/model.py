@@ -1,3 +1,5 @@
+import copy
+import torch
 from torch import nn
 from torch.nn import CrossEntropyLoss
 from transformers.models.bert import BertModel
@@ -12,7 +14,7 @@ class ModelOutput(object):
         self.attentions = attentions
 
 
-# Build you torch or tf model class here
+# Build your torch or tf model class here
 class MyModel(nn.Module):
     def __init__(self, config):  # server config
         super().__init__()
@@ -29,16 +31,24 @@ class MyModel(nn.Module):
         # For NLG
         self.vocab_size = self.bert.config.vocab_size
         tgt_embeddings = nn.Embedding(self.vocab_size, self.hidden_size, padding_idx=0)
+        tgt_embeddings.weight = copy.deepcopy(self.bert.embeddings.word_embeddings.weight)
         self.decoder = TransformerDecoder(
             num_layers=config.num_dec_layers,
             d_model=self.hidden_size,
             heads=self.bert.config.num_attention_heads,
-            d_ff=self.bert.config.intermediate_size,
-            dropout=self.dropout_prob,
+            d_ff=config.dec_d_ffn,
+            dropout=config.dec_dropout_prob,
             embeddings=tgt_embeddings,
         )
-        self.generator = nn.Linear(self.hidden_size, self.vocab_size)
-        self.generator.weight = self.decoder.embeddings.weight
+        self.decoder.embeddings = tgt_embeddings
+
+        self.generator = nn.Sequential(
+            nn.Linear(self.hidden_size, self.vocab_size),
+            nn.LogSoftmax(dim=-1),
+        )
+        self.generator[0].weight = self.decoder.embeddings.weight
+
+        self._init_decoder_params()
 
     def forward(
         self,
@@ -91,11 +101,6 @@ class MyModel(nn.Module):
 
             loss = None
             if start_positions is not None and end_positions is not None:
-                # If we are on multi-GPU, split add a dimension
-                if len(start_positions.size()) > 1:
-                    start_positions = start_positions.squeeze(-1)
-                if len(end_positions.size()) > 1:
-                    end_positions = end_positions.squeeze(-1)
                 # sometimes the start/end positions are outside our model inputs, we ignore these terms
                 ignored_index = start_logits.size(1)
                 start_positions = start_positions.clamp(0, ignored_index)
@@ -109,6 +114,8 @@ class MyModel(nn.Module):
         elif task == 'cnndm':
             dec_state = self.decoder.init_decoder_state(input_ids, outputs.last_hidden_state)
             decoder_outputs, state = self.decoder(target_ids[:, :-1], outputs.last_hidden_state, dec_state)
+            loss = None
+            logits = decoder_outputs
 
         return ModelOutput(
             loss=loss,
@@ -117,11 +124,168 @@ class MyModel(nn.Module):
             attentions=outputs.attentions,
         )
 
+    def _init_decoder_params(self):
+        for module in self.decoder.modules():
+            if isinstance(module, (nn.Linear, nn.Embedding)):
+                module.weight.data.normal_(mean=0.0, std=0.02)
+            elif isinstance(module, nn.LayerNorm):
+                module.bias.data.zero_()
+                module.weight.data.fill_(1.0)
+            if isinstance(module, nn.Linear) and module.bias is not None:
+                module.bias.data.zero_()
+        for p in self.generator.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+            else:
+                p.data.zero_()
+
 
 # Instantiate your model class with config and data
 def ModelBuilder(model_config, local_data):
-    model = MyModel(model_config)
-    return model
+    model_type = 1
+
+    if model_type == 1:
+        model = MyModel(model_config)
+        return model
+
+    if model_type == 2:
+        from federatedscope.contrib.models.bert import Bert
+
+        class BertBaseConfig(object):
+            def __init__(self, lowercase=False):
+                self.vocab_size = 28996 if not lowercase else 30522
+                self.position_size = 512
+                self.segment_size = 2
+                self.hidden_size = 768
+                self.hidden_dropout_prob = 0.1
+                self.num_attn_heads = 12
+                self.attn_dropout_prob = 0.1
+                self.ffn_hidden_size = 3072
+                self.num_layers = 12
+                self.pad_token_id = 0
+                self.sep_token_id = 102
+
+        config = BertBaseConfig(True)
+        model = Bert(config, 'squad')
+
+        import re
+        print('Loading pretrained ckpt')
+        ckpt_path = '/mnt/dongchenhe.dch/efficient-bert/pretrained_ckpt/bert-base-uncased-pytorch_model.bin'
+        raw_state_dict = torch.load(ckpt_path, map_location='cpu')
+        new_state_dict = {}
+        for n, p in raw_state_dict.items():
+            if re.search(r'pooler|cls', n) is not None: continue
+            n = re.sub(r'(bert|layer|self)\.', '', n)
+            n = re.sub(r'word_embeddings', 'token_embeddings', n)
+            n = re.sub(r'token_type_embeddings', 'segment_embeddings', n)
+            n = re.sub(r'LayerNorm', 'layernorm', n)
+            n = re.sub(r'gamma', 'weight', n)
+            n = re.sub(r'beta', 'bias', n)
+            n = re.sub(r'attention\.output', 'attention', n)
+            n = re.sub(r'intermediate\.dense', 'ffn.dense1', n)
+            n = re.sub(r'output\.dense', 'ffn.dense2', n)
+            n = re.sub(r'output', 'ffn', n)
+            new_state_dict[n] = p
+        model_state_dict = model.state_dict()
+        model_state_dict.update(new_state_dict)
+        model.load_state_dict(model_state_dict)
+
+        return model
+
+    if model_type == 3:
+        from federatedscope.contrib.models.bert import Bert
+
+        class BertBaseConfig(object):
+            def __init__(self, lowercase=False):
+                self.vocab_size = 28996 if not lowercase else 30522
+                self.position_size = 512
+                self.segment_size = 2
+                self.hidden_size = 768
+                self.hidden_dropout_prob = 0.1
+                self.num_attn_heads = 12
+                self.attn_dropout_prob = 0.1
+                self.ffn_hidden_size = 3072
+                self.num_layers = 12
+                self.pad_token_id = 0
+                self.sep_token_id = 102
+
+        config = BertBaseConfig(True)
+        model = Bert(config, 'squad')
+
+        import re
+        path = '/mnt/dongchenhe.dch/efficient-bert/exp/train/bert_base/20220526-194012/ckpt_ep3.bin'
+        ckpt = torch.load(path, map_location='cpu')['state_dict']
+
+        from collections import OrderedDict
+        new_state_dict = OrderedDict()
+        for n, p in ckpt.items():
+            n = re.sub(r'module\.', '', n)
+            new_state_dict[n] = p
+        model.load_state_dict(new_state_dict)
+
+        return model
+
+
+    if model_type == 4:
+        class BertBaseConfig(object):
+            def __init__(self):
+                self.architectures = "BertForMaskedLM"
+                self.attention_probs_dropout_prob = 0.1
+                self.attn_dropout_prob = self.attention_probs_dropout_prob
+                self.gradient_checkpointing = False
+                self.hidden_act = "gelu"
+                self.hidden_dropout_prob = 0.1
+                self.hidden_size = 768
+                self.initializer_range = 0.02
+                self.intermediate_size = 3072
+                self.layer_norm_eps = 1e-12
+                self.max_position_embeddings = 512
+                self.model_type = "bert"
+                self.num_attention_heads = 12
+                self.num_hidden_layers = 12
+                self.num_attn_heads = self.num_attention_heads
+                self.pad_token_id = 0
+                self.position_embedding_type = "absolute"
+                self.transformers_version = "4.6.0.dev0"
+                self.type_vocab_size = 2
+                self.use_cache = True
+                self.vocab_size = 30522
+                self.chunk_size_feed_forward = 0
+                self.is_decoder = False
+                self.add_cross_attention = False
+
+        config = BertBaseConfig()
+
+        path = '/mnt/dongchenhe.dch/efficient-bert/exp/train/bert_base/20220526-194012/ckpt_ep3.bin'
+        ckpt = torch.load(path, map_location='cpu')['state_dict']
+
+        import re
+        from collections import OrderedDict
+        model = MyModel2(config)
+
+        new_state_dict = {}
+        for n, p in ckpt.items():
+            n = re.sub(r'module\.', '', n)
+            n = re.sub(r'token_embeddings', 'word_embeddings', n)
+            n = re.sub(r'segment_embeddings', 'token_type_embeddings', n)
+            n = re.sub(r'layernorm', 'LayerNorm', n)
+            # n = re.sub(r'encoder', 'encoder.layer', n)
+            # n = re.sub(r'attention\.query', 'attention.self.query', n)
+            # n = re.sub(r'attention\.key', 'attention.self.key', n)
+            # n = re.sub(r'attention\.value', 'attention.self.value', n)
+            # n = re.sub(r'attention\.dense', 'attention.output.dense', n)
+            # n = re.sub(r'attention\.LayerNorm', 'attention.output.LayerNorm', n)
+            n = re.sub(r'ffn\.dense1', 'intermediate.dense', n)
+            n = re.sub(r'ffn\.dense2', 'output.dense', n)
+            n = re.sub(r'ffn', 'output', n)
+            n = re.sub(r'classifier', 'classifier.classifier_2', n)
+            new_state_dict[n] = p
+        model_state_dict = model.state_dict()
+        model_state_dict.update(new_state_dict)
+        model.load_state_dict(model_state_dict)
+        # model.load_state_dict(OrderedDict(new_state_dict))
+
+        return model
 
 
 def call_my_net(model_config, local_data):

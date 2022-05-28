@@ -239,11 +239,11 @@ class Trainer(object):
         self.ctx.pop_mode()
         self.ctx.reset_used_dataset()
         # Avoid memory leak
-        if not self.cfg.federate.share_local_model:
-            if torch is None:
-                pass
-            else:
-                self.ctx.model.to(torch.device("cpu"))
+        # if not self.cfg.federate.share_local_model:
+        #     if torch is None:
+        #         pass
+        #     else:
+        #         self.ctx.model.to(torch.device("cpu"))
 
     def update(self, model_parameters):
         '''

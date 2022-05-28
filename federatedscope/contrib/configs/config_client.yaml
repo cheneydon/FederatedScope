@@ -1,29 +1,56 @@
-client_1:
+client_3:
   federate:
     local_update_steps: 3
   data:
     type: imdb
     num_labels: 2
+  trainer:
+    train_steps: None
   eval:
     sel_metric: 'acc'
+    is_higher_better: True
     metrics: ['acc']
-client_2:
+client_1:
   federate:
     local_update_steps: 3
   data:
     type: squad
     num_labels: 2
+  trainer:
+    train_steps: None
+    val_freq: 1
   eval:
     sel_metric: 'exact_and_f1'
+    is_higher_better: True
     metrics: ['squad']
     n_best_size: 20  # total number of top-n best predictions to generate
     max_answer_len: 30  # maximum length of an answer that can be generated
     null_score_diff_threshold: 0  # if null_score - best_non_null is greater than the threshold predict null
-client_3:
+client_2:
   federate:
-    local_update_steps: 10
+    local_update_steps: 1
+  model:
+    label_smoothing: 0.1
   data:
     type: cnndm
     num_labels: None
+  trainer:
+    train_steps: 200000
+    grad_accum_count: 5
+    generator_shard_size: 32
   optimizer:
-    type: AdamW
+    type: adam
+    lr_enc: 0.002
+    lr_dec: 0.2
+    warmup_steps_enc: 20000
+    warmup_steps_dec: 10000
+    weight_decay: 0.0
+    grad_clip: 0.0
+  eval:
+    metrics: ['rouge']
+  test:
+    beam_size: 5
+    min_length: 50
+    max_length: 200
+    block_trigram: True
+    alpha: 0.95

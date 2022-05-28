@@ -35,24 +35,51 @@ def create_imdb_examples(root, split):
         return examples
 
 
-def create_imdb_dataset(root, split, tokenizer, max_seq_len):
+def create_imdb_dataset(root, split, tokenizer, max_seq_len, model_type, cache_dir=''):
     logger.info('Preprocessing {} {} dataset'.format('imdb', split))
-    examples = create_imdb_examples(root, split)
+    cache_file = osp.join(cache_dir, '_'.join(['imdb', split, str(max_seq_len), model_type]) + '.pt')
+    if osp.exists(cache_file):
+        logger.info('Loading cache file from \'{}\''.format(cache_file))
+        cache_data = torch.load(cache_file)
+        examples = cache_data['examples']
+        encoded_inputs = cache_data['encoded_inputs']
+    else:
+        examples = create_imdb_examples(root, split)
+        encoded_inputs = None
 
-    def _create_dataset(examples_):
+    def _create_dataset(examples_, encoded_inputs_=None):
         texts = [ex[0] for ex in examples_]
         labels = [ex[1] for ex in examples_]
-        encoded_inputs = tokenizer(texts, add_special_tokens=True, padding=True, truncation=True, max_length=max_seq_len)
+        if encoded_inputs_ is None:
+            encoded_inputs_ = tokenizer(texts, padding=True, truncation=True, max_length=max_seq_len, return_tensors='pt')
 
-        token_ids = torch.LongTensor(encoded_inputs.input_ids)
-        token_type_ids = torch.LongTensor(encoded_inputs.token_type_ids)
-        attention_mask = torch.LongTensor(encoded_inputs.attention_mask)
-        labels = torch.LongTensor(labels)
-
-        dataset = TensorDataset(token_ids, token_type_ids, attention_mask, labels)
-        return dataset, encoded_inputs, examples_
+        dataset = TensorDataset(encoded_inputs_.input_ids, encoded_inputs_.token_type_ids,
+                                encoded_inputs_.attention_mask, torch.LongTensor(labels))
+        return dataset, encoded_inputs_, examples_
 
     if split == 'train':
-        return _create_dataset(examples[0]), _create_dataset(examples[1])
+        if encoded_inputs is not None:
+            return _create_dataset(examples[0], encoded_inputs[0]), _create_dataset(examples[1], encoded_inputs[1])
+        else:
+            train_dataset, train_encoded, train_examples = _create_dataset(examples[0])
+            val_dataset, val_encoded, val_examples = _create_dataset(examples[1])
+            if cache_dir:
+                logger.info('Saving cache file to \'{}\''.format(cache_file))
+                os.makedirs(cache_dir, exist_ok=True)
+                torch.save({'examples': examples,
+                            'encoded_inputs': [train_encoded, val_encoded]}, cache_file)
+
+        return (train_dataset, train_encoded, train_examples), (val_dataset, val_encoded, val_examples)
+
     elif split == 'test':
-        return _create_dataset(examples)
+        if encoded_inputs is not None:
+            return _create_dataset(examples, encoded_inputs)
+        else:
+            test_dataset, test_encoded, test_examples = _create_dataset(examples)
+            if cache_dir:
+                logger.info('Saving cache file to \'{}\''.format(cache_file))
+                os.makedirs(cache_dir, exist_ok=True)
+                torch.save({'examples': examples,
+                            'encoded_inputs': test_encoded}, cache_file)
+
+        return test_dataset, test_encoded, test_examples

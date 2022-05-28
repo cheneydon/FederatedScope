@@ -385,7 +385,7 @@ class Server(Worker):
             client_eval_results = eval_msg_buffer[each_client]
             for key in client_eval_results.keys():
                 res = client_eval_results[key]
-                if isinstance(res, OrderedDict):
+                if isinstance(res, (dict, OrderedDict)):
                     for k, v in res.items():
                         cur_key = key + '_' + k
                         if key not in metrics_all_clients:

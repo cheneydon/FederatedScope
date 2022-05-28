@@ -3,7 +3,7 @@ import collections
 import string
 import re
 from tqdm import tqdm
-from transformers.models.bert import BasicTokenizer
+from transformers import BasicTokenizer
 
 
 def normalize_answer(s):
@@ -441,22 +441,3 @@ def compute_squad_metrics(examples, encoded_inputs, results, n_best_size, max_an
     if return_text:
         return predicted_answer_texts
     return metrics
-
-
-def load_squad_metric(ctx, **kwargs):
-    examples = ctx.get('{}_examples'.format(ctx.cur_data_split))
-    encoded_inputs = ctx.get('{}_encoded'.format(ctx.cur_data_split))
-    results = ctx.get('{}_squad_results'.format(ctx.cur_data_split))
-    n_best_size = ctx.cfg.eval.n_best_size
-    max_answer_len = ctx.cfg.eval.max_answer_len
-    null_score_diff_threshold = ctx.cfg.eval.null_score_diff_threshold
-
-    metrics = compute_squad_metrics(
-        examples, encoded_inputs, results, n_best_size, max_answer_len, null_score_diff_threshold)
-    return metrics
-
-
-def call_squad_metric(types):
-    metric_name = 'squad'
-    if metric_name in types:
-        return metric_name, load_squad_metric

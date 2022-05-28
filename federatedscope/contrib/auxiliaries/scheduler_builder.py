@@ -1,8 +1,9 @@
 from torch.optim.lr_scheduler import LambdaLR
 
+
 def get_scheduler(type, optimizer, total_steps, warmup_steps=0, last_epoch=-1, **kwargs):
     if isinstance(type, str):
-        if type == 'mystep':
+        if type == 'step':
             def lr_lambda(cur_step):
                 if cur_step < warmup_steps:
                     return float(cur_step) / float(max(1, warmup_steps))
