@@ -201,10 +201,11 @@ class Client(Worker):
                     f"Client #{self.ID} has been early stopped, we will skip the local training"
                 )
             else:
+                self.trainer._set_state(self.state)
                 sample_size, model_para_all, results = self.trainer.train()
                 logger.info(
                     self._monitor.format_eval_res(results,
-                                                  rnd=self.state,
+                                                  rnd=self.state + 1,
                                                   role='Client #{}'.format(
                                                       self.ID),
                                                   return_raw=True))
@@ -329,7 +330,7 @@ class Client(Worker):
                     if self._cfg.federate.mode == 'distributed':
                         logger.info(
                             self._monitor.format_eval_res(eval_metrics,
-                                                          rnd=self.state,
+                                                          rnd=self.state + 1,
                                                           role='Client #{}'.format(
                                                               self.ID)))
 
@@ -337,7 +338,7 @@ class Client(Worker):
 
             formatted_eval_res = self._monitor.format_eval_res(
                 metrics,
-                rnd=self.state,
+                rnd=self.state + 1,
                 role='Client #{}'.format(self.ID),
                 forms='raw',
                 return_raw=True)

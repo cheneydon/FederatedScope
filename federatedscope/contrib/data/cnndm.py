@@ -2,6 +2,7 @@ import os
 import os.path as osp
 import logging
 import torch
+import numpy as np
 from nltk.tokenize import sent_tokenize
 from torch.utils.data.dataset import TensorDataset
 
@@ -31,35 +32,66 @@ def preprocess_tgt_examples(examples, bos='[unused0]', eos='[unused1]', eoq='[un
     return new_examples
 
 
-def create_cnndm_dataset(root, split, tokenizer, max_src_len, max_tgt_len, model_type, cache_dir=''):
+def create_cnndm_dataset(root, split, tokenizer, max_src_len, max_tgt_len, model_type, raw_cache_dir=''):
     logger.info('Preprocessing {} {} dataset'.format('cnndm', split))
-    cache_file = osp.join(cache_dir, '_'.join(['cnndm', split, str(max_src_len), str(max_tgt_len), model_type]) + '.pt')
-    if osp.exists(cache_file):
-        logger.info('Loading cache file from \'{}\''.format(cache_file))
-        cache_data = torch.load(cache_file)
-        src_examples = cache_data['src_examples']
-        tgt_examples = cache_data['tgt_examples']
-        src_encoded = cache_data['src_encoded']
-        tgt_encoded = cache_data['tgt_encoded']
+    cache_dir = osp.join(raw_cache_dir, 'cnndm', '_'.join([str(max_src_len), str(max_tgt_len), model_type]), split)
+
+    src_examples, tgt_examples = create_cnndm_examples(root, split)
+    if osp.exists(cache_dir):
+        logger.info('Loading cache file from \'{}\''.format(cache_dir))
+        token_ids = np.memmap(filename=osp.join(cache_dir, 'token_ids.memmap'),
+                              shape=(len(src_examples), max_src_len),
+                              mode='r',
+                              dtype=np.int64)
+        token_type_ids = np.memmap(filename=osp.join(cache_dir, 'token_type_ids.memmap'),
+                                   shape=(len(src_examples), max_src_len),
+                                   mode='r',
+                                   dtype=np.int64)
+        attention_mask = np.memmap(filename=osp.join(cache_dir, 'attention_mask.memmap'),
+                                   shape=(len(src_examples), max_src_len),
+                                   mode='r',
+                                   dtype=np.int64)
+        labels = np.memmap(filename=osp.join(cache_dir, 'labels.memmap'),
+                           shape=(len(src_examples), max_tgt_len),
+                           mode='r',
+                           dtype=np.int64)
     else:
-        src_examples, tgt_examples = create_cnndm_examples(root, split)
         tgt_examples = preprocess_tgt_examples(tgt_examples)
-        src_encoded = tokenizer(src_examples, padding=True, truncation=True, max_length=max_src_len, return_tensors='pt')
-        tgt_encoded = tokenizer(tgt_examples, padding=True, truncation=True, max_length=max_tgt_len, return_tensors='pt',
-                                add_special_tokens=False)
+        src_encoded = tokenizer(src_examples, padding='max_length', truncation=True, max_length=max_src_len,
+                                return_tensors='pt')
+        tgt_encoded = tokenizer(tgt_examples, padding='max_length', truncation=True, max_length=max_tgt_len,
+                                return_tensors='pt', add_special_tokens=False)
 
-        if cache_dir:
-            logger.info('Saving cache file to \'{}\''.format(cache_file))
+        if raw_cache_dir:
+            logger.info('Saving cache file to \'{}\''.format(cache_dir))
             os.makedirs(cache_dir, exist_ok=True)
-            torch.save({'src_examples': src_examples,
-                        'tgt_examples': tgt_examples,
-                        'src_encoded': src_encoded,
-                        'tgt_encoded': tgt_encoded}, cache_file)
+            token_ids = np.memmap(filename=osp.join(cache_dir, 'token_ids.memmap'),
+                                  shape=(len(src_examples), max_src_len),
+                                  mode='w+',
+                                  dtype=np.int64)
+            token_type_ids = np.memmap(filename=osp.join(cache_dir, 'token_type_ids.memmap'),
+                                       shape=(len(src_examples), max_src_len),
+                                       mode='w+',
+                                       dtype=np.int64)
+            attention_mask = np.memmap(filename=osp.join(cache_dir, 'attention_mask.memmap'),
+                                       shape=(len(src_examples), max_src_len),
+                                       mode='w+',
+                                       dtype=np.int64)
+            labels = np.memmap(filename=osp.join(cache_dir, 'labels.memmap'),
+                               shape=(len(src_examples), max_tgt_len),
+                               mode='w+',
+                               dtype=np.int64)
 
-    token_ids = src_encoded.input_ids
-    token_type_ids = src_encoded.token_type_ids
-    attention_mask = src_encoded.attention_mask
-    labels = tgt_encoded.input_ids
+            for i in range(len(src_examples)):
+                token_ids[i] = src_encoded.input_ids[i]
+                token_type_ids[i] = src_encoded.token_type_ids[i]
+                attention_mask[i] = src_encoded.attention_mask[i]
+                labels[i] = tgt_encoded.input_ids[i]
+
+    token_ids = torch.from_numpy(token_ids)
+    token_type_ids = torch.from_numpy(token_type_ids)
+    attention_mask = torch.from_numpy(attention_mask)
+    labels = torch.from_numpy(labels)
 
     dataset = TensorDataset(token_ids, token_type_ids, attention_mask, labels)
-    return dataset, (src_encoded, tgt_encoded), (src_examples, tgt_examples)
+    return dataset, None, None

@@ -168,8 +168,8 @@ def create_squad_examples(root, split):
 
 def create_squad_dataset(root, split, tokenizer, max_seq_len, max_query_len, trunc_stride, model_type, cache_dir=''):
     logger.info('Preprocessing {} {} dataset'.format('squad', split))
-    cache_file = osp.join(cache_dir, '_'.join(['squad', split, str(max_seq_len), str(max_query_len),
-                                               str(trunc_stride), model_type]) + '.pt')
+    cache_file = osp.join(cache_dir, 'squad', '_'.join(['squad', split, str(max_seq_len), str(max_query_len),
+                                                        str(trunc_stride), model_type]) + '.pt')
     if osp.exists(cache_file):
         logger.info('Loading cache file from \'{}\''.format(cache_file))
         cache_data = torch.load(cache_file)
@@ -306,7 +306,7 @@ def create_squad_dataset(root, split, tokenizer, max_seq_len, max_query_len, tru
             val_dataset, val_encoded, val_examples = _create_dataset(examples[1])
             if cache_dir:
                 logger.info('Saving cache file to \'{}\''.format(cache_file))
-                os.makedirs(cache_dir, exist_ok=True)
+                os.makedirs(osp.join(cache_dir, 'squad'), exist_ok=True)
                 torch.save({'examples': examples,
                             'encoded_inputs': [train_encoded, val_encoded]}, cache_file)
 
@@ -319,7 +319,7 @@ def create_squad_dataset(root, split, tokenizer, max_seq_len, max_query_len, tru
             test_dataset, test_encoded, test_examples = _create_dataset(examples)
             if cache_dir:
                 logger.info('Saving cache file to \'{}\''.format(cache_file))
-                os.makedirs(cache_dir, exist_ok=True)
+                os.makedirs(osp.join(cache_dir, 'squad'), exist_ok=True)
                 torch.save({'examples': examples,
                             'encoded_inputs': test_encoded}, cache_file)
 

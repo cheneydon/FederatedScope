@@ -211,7 +211,7 @@ class NMTLossCompute(LossComputeBase):
     def _compute_loss(self, output, target):
         bottled_output = self._bottle(output)
         scores = self.generator(bottled_output)
-        gtruth =target.contiguous().view(-1)
+        gtruth = target.contiguous().view(-1)
 
         loss = self.criterion(scores, gtruth)
 

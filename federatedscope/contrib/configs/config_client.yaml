@@ -1,41 +1,37 @@
-client_3:
+client_1:
   federate:
-    local_update_steps: 3
+    local_update_steps: 1
   data:
     type: imdb
     num_labels: 2
   trainer:
-    train_steps: None
+    train_steps: 10 #50 #250 #2500
+    grad_accum_count: 1
   eval:
-    sel_metric: 'acc'
-    is_higher_better: True
     metrics: ['acc']
-client_1:
+client_2:
   federate:
-    local_update_steps: 3
+    local_update_steps: 1
   data:
     type: squad
     num_labels: 2
   trainer:
-    train_steps: None
-    val_freq: 1
+    train_steps: 10 #50 #250 #50000
+    grad_accum_count: 1
   eval:
-    sel_metric: 'exact_and_f1'
-    is_higher_better: True
     metrics: ['squad']
     n_best_size: 20  # total number of top-n best predictions to generate
     max_answer_len: 30  # maximum length of an answer that can be generated
     null_score_diff_threshold: 0  # if null_score - best_non_null is greater than the threshold predict null
-client_2:
+client_3:
   federate:
     local_update_steps: 1
   model:
     label_smoothing: 0.1
   data:
     type: cnndm
-    num_labels: None
   trainer:
-    train_steps: 200000
+    train_steps: 10 #50 #250 #50000
     grad_accum_count: 5
     generator_shard_size: 32
   optimizer:

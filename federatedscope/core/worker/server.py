@@ -285,8 +285,8 @@ class Server(Worker):
                 if self.state < self.total_round_num:
                     # Move to next round of training
                     logger.info(
-                        '----------- Starting a new training round (Round #{:d}) -------------'
-                        .format(self.state))
+                        '----------- Starting a new training round (Round #{:d}/{:d}) -------------'
+                        .format(self.state + 1, self._cfg.federate.total_round_num))
                     # Clean the msg_buffer
                     self.msg_buffer['train'][self.state - 1].clear()
 
@@ -524,8 +524,8 @@ class Server(Worker):
             if self._cfg.federate.use_ss:
                 self.broadcast_client_address()
             logger.info(
-                '----------- Starting training (Round #{:d}) -------------'.
-                format(self.state))
+                '----------- Starting training (Round #{:d}/{:d}) -------------'.
+                format(self.state + 1, self._cfg.federate.total_round_num))
             self.broadcast_model_para(msg_type='model_para',
                                       sample_client_num=self.sample_client_num)
 

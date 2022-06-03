@@ -2,9 +2,10 @@ import copy
 
 import torch
 
-from federatedscope.core.auxiliaries.optimizer_builder import get_optimizer
+# from federatedscope.core.auxiliaries.optimizer_builder import get_optimizer
 from federatedscope.core.trainers.trainer import GeneralTorchTrainer
 from federatedscope.core.optimizer import wrap_regularized_optimizer
+from federatedscope.contrib.auxiliaries.optimizer_builder import get_optimizer
 from typing import Type
 
 
@@ -110,7 +111,6 @@ def hook_on_batch_start_switch_model(ctx):
                       ctx.cur_batch_i <= ctx.num_train_batch_for_local_model
     if use_local_model:
         ctx.model = ctx.local_model
-
         ctx.optimizer = ctx.optimizer_for_local_model
     else:
         ctx.model = ctx.global_model

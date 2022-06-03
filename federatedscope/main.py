@@ -7,6 +7,7 @@ if DEV_MODE:
     file_dir = os.path.join(os.path.dirname(__file__), '..')
     sys.path.append(file_dir)
 
+import copy
 from transformers.models.bert import BertTokenizerFast
 from federatedscope.core.cmd_args import parse_args
 from federatedscope.core.auxiliaries.data_builder import get_data
@@ -33,11 +34,13 @@ def extend_init_cfg(cfg):
     cfg.model.dec_d_ffn = None
     cfg.model.dec_dropout_prob = None
     cfg.model.num_dec_layers = None
-    cfg.model.num_labels = None
+    cfg.model.num_labels = CN()
+    cfg.model.num_labels.imdb = None
+    cfg.model.num_labels.squad = None
+    cfg.model.num_labels.cnndm = None
     cfg.model.label_smoothing = None
 
-    cfg.eval.sel_metric = None
-    cfg.eval.is_higher_better = None
+    cfg.eval.val_freq = None
     cfg.eval.n_best_size = None
     cfg.eval.max_answer_len = None
     cfg.eval.null_score_diff_threshold = None
@@ -70,6 +73,7 @@ def extend_init_cfg(cfg):
     cfg.trainer.train_steps = None
     cfg.trainer.generator_shard_size = None
     cfg.trainer.save_dir = None
+    cfg.trainer.test_only = None
 
     cfg.test = CN()
     cfg.test.visible_gpus = cfg.device
@@ -96,17 +100,27 @@ def extend_cfg_client(init_cfg, cfg_client):
         cfg = cfg_client['client_{}'.format(i)]
         task = cfg.data.type
         cfg.data.batch_size = init_cfg.data.all_batch_size[task]
-        cfg.trainer.save_dir = osp.join(init_cfg.trainer.save_dir, task)
-        os.mkdir(cfg.trainer.save_dir)
+        if init_cfg.trainer.save_dir:
+            cfg.trainer.save_dir = osp.join(init_cfg.trainer.save_dir, task)
+            os.mkdir(cfg.trainer.save_dir)
+
+    with open(osp.join(init_cfg.outdir, 'config_client.yaml'), 'w') as outfile:
+        from contextlib import redirect_stdout
+        with redirect_stdout(outfile):
+            tmp_cfg = copy.deepcopy(cfg_client)
+            tmp_cfg.cfg_check_funcs = []
+            print(tmp_cfg.dump())
+
     return cfg_client
 
 
 def redirect_cfg_dir(cfg):
     cfg.test.result_path = cfg.outdir
     cfg.test.temp_dir = osp.join(cfg.outdir, cfg.test.temp_dir)
-    cfg.trainer.save_dir = osp.join(cfg.outdir, cfg.trainer.save_dir)
     os.mkdir(cfg.test.temp_dir)
-    os.mkdir(cfg.trainer.save_dir)
+    if cfg.trainer.save_dir:
+        cfg.trainer.save_dir = osp.join(cfg.outdir, cfg.trainer.save_dir)
+        os.mkdir(cfg.trainer.save_dir)
     return cfg
 
 

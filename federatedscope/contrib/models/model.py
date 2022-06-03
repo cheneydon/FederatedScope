@@ -1,5 +1,4 @@
 import copy
-import torch
 from torch import nn
 from torch.nn import CrossEntropyLoss
 from transformers.models.bert import BertModel
@@ -22,11 +21,15 @@ class MyModel(nn.Module):
         self.bert = BertModel.from_pretrained(config.bert_type)
         self.hidden_size = self.bert.config.hidden_size
         self.dropout_prob = self.bert.config.hidden_dropout_prob
+        self.config = config
 
         # For NLU
         self.dropout = nn.Dropout(self.dropout_prob)
-        self.classifier = nn.ModuleDict({'classifier_{}'.format(k): nn.Linear(self.hidden_size, k)
-                                         for k in config.num_labels})
+        self.classifier = nn.ModuleDict()
+        all_tasks = [k for k in config.num_labels.keys() if k != 'cfg_check_funcs']
+        for t in all_tasks:
+            num_lb = config.num_labels[t]
+            self.classifier[t] = nn.Linear(self.hidden_size, num_lb) if num_lb is not None else None
 
         # For NLG
         self.vocab_size = self.bert.config.vocab_size
@@ -84,7 +87,7 @@ class MyModel(nn.Module):
         if task == 'imdb':
             pooled_output = outputs.pooler_output
             pooled_output = self.dropout(pooled_output)
-            logits = self.classifier['classifier_{}'.format(num_labels)](pooled_output)
+            logits = self.classifier[task](pooled_output)
 
             loss = None
             if labels is not None:
@@ -93,7 +96,7 @@ class MyModel(nn.Module):
 
         elif task == 'squad':
             sequence_output = outputs.last_hidden_state
-            logits = self.classifier['classifier_{}'.format(num_labels)](sequence_output)
+            logits = self.classifier[task](sequence_output)
             start_logits, end_logits = logits.split(1, dim=-1)
             start_logits = start_logits.squeeze(-1).contiguous()
             end_logits = end_logits.squeeze(-1).contiguous()
@@ -142,150 +145,8 @@ class MyModel(nn.Module):
 
 # Instantiate your model class with config and data
 def ModelBuilder(model_config, local_data):
-    model_type = 1
-
-    if model_type == 1:
-        model = MyModel(model_config)
-        return model
-
-    if model_type == 2:
-        from federatedscope.contrib.models.bert import Bert
-
-        class BertBaseConfig(object):
-            def __init__(self, lowercase=False):
-                self.vocab_size = 28996 if not lowercase else 30522
-                self.position_size = 512
-                self.segment_size = 2
-                self.hidden_size = 768
-                self.hidden_dropout_prob = 0.1
-                self.num_attn_heads = 12
-                self.attn_dropout_prob = 0.1
-                self.ffn_hidden_size = 3072
-                self.num_layers = 12
-                self.pad_token_id = 0
-                self.sep_token_id = 102
-
-        config = BertBaseConfig(True)
-        model = Bert(config, 'squad')
-
-        import re
-        print('Loading pretrained ckpt')
-        ckpt_path = '/mnt/dongchenhe.dch/efficient-bert/pretrained_ckpt/bert-base-uncased-pytorch_model.bin'
-        raw_state_dict = torch.load(ckpt_path, map_location='cpu')
-        new_state_dict = {}
-        for n, p in raw_state_dict.items():
-            if re.search(r'pooler|cls', n) is not None: continue
-            n = re.sub(r'(bert|layer|self)\.', '', n)
-            n = re.sub(r'word_embeddings', 'token_embeddings', n)
-            n = re.sub(r'token_type_embeddings', 'segment_embeddings', n)
-            n = re.sub(r'LayerNorm', 'layernorm', n)
-            n = re.sub(r'gamma', 'weight', n)
-            n = re.sub(r'beta', 'bias', n)
-            n = re.sub(r'attention\.output', 'attention', n)
-            n = re.sub(r'intermediate\.dense', 'ffn.dense1', n)
-            n = re.sub(r'output\.dense', 'ffn.dense2', n)
-            n = re.sub(r'output', 'ffn', n)
-            new_state_dict[n] = p
-        model_state_dict = model.state_dict()
-        model_state_dict.update(new_state_dict)
-        model.load_state_dict(model_state_dict)
-
-        return model
-
-    if model_type == 3:
-        from federatedscope.contrib.models.bert import Bert
-
-        class BertBaseConfig(object):
-            def __init__(self, lowercase=False):
-                self.vocab_size = 28996 if not lowercase else 30522
-                self.position_size = 512
-                self.segment_size = 2
-                self.hidden_size = 768
-                self.hidden_dropout_prob = 0.1
-                self.num_attn_heads = 12
-                self.attn_dropout_prob = 0.1
-                self.ffn_hidden_size = 3072
-                self.num_layers = 12
-                self.pad_token_id = 0
-                self.sep_token_id = 102
-
-        config = BertBaseConfig(True)
-        model = Bert(config, 'squad')
-
-        import re
-        path = '/mnt/dongchenhe.dch/efficient-bert/exp/train/bert_base/20220526-194012/ckpt_ep3.bin'
-        ckpt = torch.load(path, map_location='cpu')['state_dict']
-
-        from collections import OrderedDict
-        new_state_dict = OrderedDict()
-        for n, p in ckpt.items():
-            n = re.sub(r'module\.', '', n)
-            new_state_dict[n] = p
-        model.load_state_dict(new_state_dict)
-
-        return model
-
-
-    if model_type == 4:
-        class BertBaseConfig(object):
-            def __init__(self):
-                self.architectures = "BertForMaskedLM"
-                self.attention_probs_dropout_prob = 0.1
-                self.attn_dropout_prob = self.attention_probs_dropout_prob
-                self.gradient_checkpointing = False
-                self.hidden_act = "gelu"
-                self.hidden_dropout_prob = 0.1
-                self.hidden_size = 768
-                self.initializer_range = 0.02
-                self.intermediate_size = 3072
-                self.layer_norm_eps = 1e-12
-                self.max_position_embeddings = 512
-                self.model_type = "bert"
-                self.num_attention_heads = 12
-                self.num_hidden_layers = 12
-                self.num_attn_heads = self.num_attention_heads
-                self.pad_token_id = 0
-                self.position_embedding_type = "absolute"
-                self.transformers_version = "4.6.0.dev0"
-                self.type_vocab_size = 2
-                self.use_cache = True
-                self.vocab_size = 30522
-                self.chunk_size_feed_forward = 0
-                self.is_decoder = False
-                self.add_cross_attention = False
-
-        config = BertBaseConfig()
-
-        path = '/mnt/dongchenhe.dch/efficient-bert/exp/train/bert_base/20220526-194012/ckpt_ep3.bin'
-        ckpt = torch.load(path, map_location='cpu')['state_dict']
-
-        import re
-        from collections import OrderedDict
-        model = MyModel2(config)
-
-        new_state_dict = {}
-        for n, p in ckpt.items():
-            n = re.sub(r'module\.', '', n)
-            n = re.sub(r'token_embeddings', 'word_embeddings', n)
-            n = re.sub(r'segment_embeddings', 'token_type_embeddings', n)
-            n = re.sub(r'layernorm', 'LayerNorm', n)
-            # n = re.sub(r'encoder', 'encoder.layer', n)
-            # n = re.sub(r'attention\.query', 'attention.self.query', n)
-            # n = re.sub(r'attention\.key', 'attention.self.key', n)
-            # n = re.sub(r'attention\.value', 'attention.self.value', n)
-            # n = re.sub(r'attention\.dense', 'attention.output.dense', n)
-            # n = re.sub(r'attention\.LayerNorm', 'attention.output.LayerNorm', n)
-            n = re.sub(r'ffn\.dense1', 'intermediate.dense', n)
-            n = re.sub(r'ffn\.dense2', 'output.dense', n)
-            n = re.sub(r'ffn', 'output', n)
-            n = re.sub(r'classifier', 'classifier.classifier_2', n)
-            new_state_dict[n] = p
-        model_state_dict = model.state_dict()
-        model_state_dict.update(new_state_dict)
-        model.load_state_dict(model_state_dict)
-        # model.load_state_dict(OrderedDict(new_state_dict))
-
-        return model
+    model = MyModel(model_config)
+    return model
 
 
 def call_my_net(model_config, local_data):

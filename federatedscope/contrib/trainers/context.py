@@ -48,8 +48,11 @@ class MyContext(Context):
                     weight_decay=self.cfg.optimizer.weight_decay)
                 self.grad_clip = self.cfg.optimizer.grad_clip
 
-                num_steps = len(self.train_loader) * self.cfg.federate.local_update_steps * \
-                            self.cfg.federate.total_round_num
+                if self.cfg.trainer.train_steps is not None:
+                    num_steps = self.cfg.trainer.train_steps * self.cfg.federate.total_round_num
+                else:
+                    num_steps = len(self.train_loader) * self.cfg.federate.local_update_steps * \
+                                self.cfg.federate.total_round_num
                 self.scheduler = get_scheduler(
                     self.cfg.scheduler.type,
                     self.optimizer,
