@@ -87,19 +87,16 @@ class MyTrainer(GeneralTorchTrainer):
             tasks = None
             if cur_task == 'imdb':
                 tasks = ['imdb', 'squad', 'cnndm']
-                # num_samples = [22500, 339762, 287227]
-                num_samples = [32 * 50, 32 * 1000, 4 * 1000]
+                num_samples = [1, 0, 0]
             elif cur_task == 'squad':
                 tasks = ['squad', 'imdb', 'cnndm']
-                # num_samples = [339762, 22500, 287227]
-                num_samples = [32 * 1000, 32 * 50, 4 * 1000]
+                num_samples = [1, 0, 0]
             elif cur_task == 'cnndm':
                 tasks = ['cnndm', 'imdb', 'squad']
-                # num_samples = [287227, 22500, 339762]
-                num_samples = [4 * 1000, 32 * 50, 32 * 1000]
+                num_samples = [1, 0, 0]
 
             for task in tasks:
-                ckpt_path = 'exp/share_enc/sub_exp_20220601170251/ckpt/{}/last_model.pt'.format(task)
+                ckpt_path = 'exp/share_enc/sub_exp_20220602113915/ckpt/{}/last_model.pt'.format(task)
                 logger.info('Loading ckpt from \'{}\''.format(ckpt_path))
                 state_dict = torch.load(ckpt_path, map_location='cpu')['model']
                 models.append(state_dict)
@@ -137,7 +134,7 @@ class MyTrainer(GeneralTorchTrainer):
                         avg_model[key] += local_model[key] * weight
 
             ctx.model.load_state_dict(avg_model)
-            logger.info('==> Start evaluation')
+            logger.info('==> Start test evaluation')
             test_metrics = self.evaluate('test')
             logger.info(test_metrics)
 
@@ -289,7 +286,8 @@ class MyTrainer(GeneralTorchTrainer):
                 o.step()
 
     def _validate_and_test(self, ctx):
-        logger.info('==> Start evaluation')
+        # self._save(ctx, 'last_model.pt')
+        logger.info('==> Start val evaluation')
         store_ctx = self._store_ctx(ctx)
         val_metrics = self.evaluate('val')
         self._restore_ctx(ctx, store_ctx)
@@ -301,23 +299,24 @@ class MyTrainer(GeneralTorchTrainer):
             self.best_epoch = ctx.cur_epoch_i + 1
             self.best_step = (ctx.cur_batch_i + 1) // ctx.cfg.trainer.grad_accum_count
             logger.info('Best val_avg_loss found: {}'.format(self.best_sel_val_metric))
-            self._save(ctx)
+            self._save(ctx, 'best_model.pt')
 
         if self.state + 1 == ctx.cfg.federate.total_round_num:
-            logger.info('==> Start final test')
+            logger.info('==> Start test evaluation')
             store_ctx = self._store_ctx(ctx)
+            # test_metrics = self.evaluate('test')
+            # logger.info('Test metrics (last): {}'.format(test_metrics))
+
             raw_state_dict = copy.deepcopy(ctx.model.state_dict())
             best_ckpt_path = osp.join(ctx.cfg.trainer.save_dir, 'best_model.pt')
-            logger.info('Loading best ckpt \'{}\''.format(best_ckpt_path))
             best_state_dict = torch.load(best_ckpt_path, map_location='cpu')['model']
             ctx.model.load_state_dict(best_state_dict)
             test_metrics = self.evaluate('test')
-            logger.info('Recovering model ckpt')
             ctx.model.load_state_dict(raw_state_dict)
-            logger.info('Test metrics: {}'.format(test_metrics))
+            logger.info('Test metrics (best): {}'.format(test_metrics))
             self._restore_ctx(ctx, store_ctx)
 
-    def _save(self, ctx):
+    def _save(self, ctx, ckpt_name):
         if ctx.cfg.trainer.save_dir:
             ckpt = {
                 'model': ctx.model.state_dict(),
@@ -326,8 +325,8 @@ class MyTrainer(GeneralTorchTrainer):
                 'epoch': ctx.cur_epoch_i + 1,
                 'step': (ctx.cur_batch_i + 1) // ctx.cfg.trainer.grad_accum_count
             }
-            ckpt_path = osp.join(ctx.cfg.trainer.save_dir, 'best_model.pt')
-            logger.info('Saving checkpoint {}'.format(ckpt_path))
+            ckpt_path = osp.join(ctx.cfg.trainer.save_dir, ckpt_name)
+            # logger.info('Saving checkpoint {}'.format(ckpt_path))
             torch.save(ckpt, ckpt_path)
 
     def _hook_on_batch_backward(self, ctx):
@@ -389,10 +388,10 @@ class MyTrainer(GeneralTorchTrainer):
             if cur_task == 'cnndm':
                 setattr(ctx, 'loss_agg_report_{}'.format(ctx.cur_data_split), Statistics())
 
-            if ctx.cur_batch_i + 1 == ctx.num_train_batch:
-                if (self.state + 1) % ctx.cfg.eval.val_freq == 0 or \
-                        self.state + 1 == ctx.cfg.federate.total_round_num:
-                    self._validate_and_test(ctx)
+            # if ctx.cur_batch_i + 1 == ctx.num_train_batch:
+            #     if (self.state + 1) % ctx.cfg.eval.val_freq == 0 or \
+            #             self.state + 1 == ctx.cfg.federate.total_round_num:
+            #         self._validate_and_test(ctx)
 
     def _hook_on_batch_end(self, ctx):
         # update statistics
@@ -436,7 +435,7 @@ class MyTrainer(GeneralTorchTrainer):
         """
         if ctx.cur_data_split == 'train':
             if self.state + 1 == ctx.cfg.federate.total_round_num:
-                logger.info('==> Best val_avg_loss metric {} found in: round {} epoch {} step {}'
+                logger.info('Best val_avg_loss metric {} found in: round {} epoch {} step {}'
                             .format(self.best_sel_val_metric, self.best_round, self.best_epoch, self.best_step))
         else:
             if len(ctx.get("{}_y_true".format(ctx.cur_data_split))) > 0:

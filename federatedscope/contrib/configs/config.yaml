@@ -1,5 +1,5 @@
 use_gpu: True
-device: 0
+device: 4
 seed: 12345
 outdir: exp/share_enc_step_agg
 federate:
@@ -7,7 +7,7 @@ federate:
   method: fedavg
   local_update_steps: 1
   batch_or_epoch: epoch
-  total_round_num: 5000 #1000 #200
+  total_round_num: 1000 #5000 #200
   client_num: 3
 data:
   type: mydata
@@ -40,7 +40,6 @@ model:
     cnndm: None
 personalization:
   local_param: ['classifier', 'decoder', 'generator']
-#  local_param: ['classifier', 'decoder', 'generator', 'norm', 'Norm']
 optimizer:
   type: AdamW
   lr: 3e-5
@@ -57,11 +56,11 @@ trainer:
   val_freq: 100000000
   grad_accum_count: 1
   save_dir: ckpt
-  test_only: True
+#  test_only: True
 eval:
   split: ['test']
   best_res_update_round_wise_key: test_loss
-  val_freq: 250 #50 #10  # eval freq across rounds (before agg)
+  val_freq: 1000 #100 #250 #10  # eval freq across rounds (before agg)
   freq: 100000000  # eval freq across rounds (after agg)
 test:
   temp_dir: temp

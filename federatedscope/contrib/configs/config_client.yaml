@@ -5,7 +5,7 @@ client_1:
     type: imdb
     num_labels: 2
   trainer:
-    train_steps: 10 #50 #250 #2500
+    train_steps: 50 #10 #250 #2500
     grad_accum_count: 1
   eval:
     metrics: ['acc']
@@ -16,7 +16,7 @@ client_2:
     type: squad
     num_labels: 2
   trainer:
-    train_steps: 10 #50 #250 #50000
+    train_steps: 50 #10 #250 #50000
     grad_accum_count: 1
   eval:
     metrics: ['squad']
@@ -31,7 +31,7 @@ client_3:
   data:
     type: cnndm
   trainer:
-    train_steps: 10 #50 #250 #50000
+    train_steps: 50 #10 #250 #50000
     grad_accum_count: 5
     generator_shard_size: 32
   optimizer:
