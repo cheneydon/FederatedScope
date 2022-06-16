@@ -1,10 +1,10 @@
 use_gpu: True
 device: 0
-seed: 12345
-outdir: exp/share_enc_step_agg/
+seed: 123 #1234 #12345
+outdir: exp/sts_imdb_squad/fedavg/
 federate:
   mode: standalone
-  method: local #fedavg
+  method: fedavg
   local_update_steps: 1
   batch_or_epoch: epoch
   total_round_num: 50
@@ -44,7 +44,7 @@ model:
     squad: 2
     cnndm: None
 personalization:
-  local_param: ['classifier', 'decoder', 'generator']
+  local_param: ['classifier']
 trainer:
   type: mytrainer
   disp_freq: 50
@@ -54,5 +54,6 @@ eval:
   split: ['test']
   best_res_update_round_wise_key: test_loss
   freq: 100000000  # eval freq across rounds
+  report: ['raw']
 test:
   temp_dir: temp

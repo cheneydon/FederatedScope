@@ -1,54 +1,60 @@
 client_1:
   federate:
     local_update_steps: 1
+  model:
+    label_smoothing: 0.0
   data:
     type: sts
   optimizer:
-    type: AdamW
-    lr: 3e-5
-    weight_decay: 0.01
+    type: SGD #AdamW
+    lr: 1e-3 #3e-4 #3e-5
+    weight_decay: 0.0 #0.01
     grad_clip: 1.0
   scheduler:
     type: step
     warmup_ratio: 0.1
   trainer:
-    train_steps: 1000
+    train_steps: 50 #500
     grad_accum_count: 1
   eval:
-    metrics: ['acc']
+    metrics: ['sts']
 client_2:
   federate:
     local_update_steps: 1
+  model:
+    label_smoothing: 0.0
   data:
     type: imdb
   optimizer:
-    type: AdamW
-    lr: 3e-5
-    weight_decay: 0.01
+    type: SGD #AdamW
+    lr: 1e-3 #3e-4 #3e-5
+    weight_decay: 0.0 #0.01
     grad_clip: 1.0
   scheduler:
     type: step
     warmup_ratio: 0.1
   trainer:
-    train_steps: 1000
+    train_steps: 50 #500
     grad_accum_count: 1
   eval:
     metrics: ['acc']
 client_3:
   federate:
     local_update_steps: 1
+  model:
+    label_smoothing: 0.0
   data:
     type: squad
   optimizer:
-    type: AdamW
-    lr: 3e-5
-    weight_decay: 0.01
+    type: SGD #AdamW
+    lr: 1e-3 #3e-4 #3e-5
+    weight_decay: 0.0 #0.01
     grad_clip: 1.0
   scheduler:
     type: step
     warmup_ratio: 0.1
   trainer:
-    train_steps: 1000
+    train_steps: 50 #500
     grad_accum_count: 1
   eval:
     metrics: ['squad']

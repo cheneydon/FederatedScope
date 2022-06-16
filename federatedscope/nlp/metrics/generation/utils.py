@@ -2,7 +2,7 @@ import os
 import re
 import shutil
 import time
-from federatedscope.contrib.metrics.generation import pyrouge
+from federatedscope.nlp.metrics.generation import pyrouge
 
 REMAP = {"-lrb-": "(", "-rrb-": ")", "-lcb-": "{", "-rcb-": "}",
          "-lsb-": "[", "-rsb-": "]", "``": '"', "''": '"'}

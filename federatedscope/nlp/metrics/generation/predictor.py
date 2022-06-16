@@ -5,8 +5,8 @@ import codecs
 import os.path as osp
 import torch
 from tqdm import tqdm
-from federatedscope.contrib.metrics.generation.utils import rouge_results_to_str, test_rouge, tile
-from federatedscope.contrib.metrics.generation.beam import GNMTGlobalScorer
+from federatedscope.nlp.metrics.generation.utils import test_rouge, tile
+from federatedscope.nlp.metrics.generation.beam import GNMTGlobalScorer
 
 
 def build_predictor(args, tokenizer, symbols, model, logger=None):
@@ -170,12 +170,14 @@ class Translator(object):
         rouges = None
         if step != -1:
             rouges = self._report_rouge(gold_path, can_path)
-            self.logger.info('Rouge results:\n{}'.format(rouge_results_to_str(rouges)))
+            # self.logger.info('Rouge results:\n{}'.format(rouge_results_to_str(rouges)))
             if self.tensorboard_writer is not None:
                 self.tensorboard_writer.add_scalar('test/rouge1-F', rouges['rouge_1_f_score'], step)
                 self.tensorboard_writer.add_scalar('test/rouge2-F', rouges['rouge_2_f_score'], step)
                 self.tensorboard_writer.add_scalar('test/rougeL-F', rouges['rouge_l_f_score'], step)
-        return rouges
+        # return rouges
+        return {k: v for k, v in rouges.items()
+                if k in {'rouge_1_f_score', 'rouge_2_f_score', 'rouge_l_f_score'}}
 
     def _report_rouge(self, gold_path, can_path):
         # self.logger.info("Calculating Rouge")

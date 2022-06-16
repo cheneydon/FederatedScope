@@ -3,6 +3,8 @@ import numpy as np
 from collections import defaultdict
 
 import federatedscope.register as register
+from federatedscope.contrib.data import *
+from federatedscope.nlp.dataset import *
 
 
 def load_toy_data(config=None):

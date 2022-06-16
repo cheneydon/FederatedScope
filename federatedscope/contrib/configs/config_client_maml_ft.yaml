@@ -12,10 +12,10 @@ client_1:
     type: step
     warmup_ratio: 0.1
   trainer:
-    train_steps: 1000
+    train_steps: 500
     grad_accum_count: 1
   eval:
-    metrics: ['acc']
+    metrics: ['sts']
 client_2:
   federate:
     local_update_steps: 1
@@ -48,7 +48,7 @@ client_3:
     type: step
     warmup_ratio: 0.1
   trainer:
-    train_steps: 1000
+    train_steps: 10000
     grad_accum_count: 1
   eval:
     metrics: ['squad']
@@ -64,14 +64,14 @@ client_4:
     type: cnndm
   optimizer:
     type: adam
-    lr_enc: 0.002
-    lr_dec: 0.2
-    warmup_steps_enc: 20000
-    warmup_steps_dec: 10000
+    lr_enc: 2e-4 #0.002
+    lr_dec: 2e-2 #0.2
+    warmup_steps_enc: 2000 #20000
+    warmup_steps_dec: 1000 #10000
     weight_decay: 0.0
     grad_clip: 0.0
   trainer:
-    train_steps: 1000
+    train_steps: 5000 #1000
     grad_accum_count: 5
     generator_shard_size: 32
   eval:

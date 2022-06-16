@@ -2,6 +2,8 @@ import logging
 import importlib
 
 import federatedscope.register as register
+from federatedscope.contrib.trainer import *
+from federatedscope.nlp.trainer import *
 
 logger = logging.getLogger(__name__)
 

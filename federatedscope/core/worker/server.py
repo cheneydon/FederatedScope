@@ -295,6 +295,9 @@ class Server(Worker):
                         sample_client_num=self.sample_client_num)
                 else:
                     # Final Evaluate
+                    if self._cfg.federate.save_to != '':
+                        self.aggregator.save_model(self._cfg.federate.save_to, self.state)
+
                     logger.info(
                         'Server #{:d}: Training is finished! Starting evaluation.'
                         .format(self.ID))
@@ -368,6 +371,8 @@ class Server(Worker):
         with open(os.path.join(self._cfg.outdir, "eval_results.log"),
                   "a") as outfile:
             outfile.write(str(formatted_res) + "\n")
+
+
 
     def merge_eval_results_from_all_clients(self, final_round=False):
         """

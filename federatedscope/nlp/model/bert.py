@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn as nn
 from torch.nn import CrossEntropyLoss
-from federatedscope.contrib.models.model import ModelOutput
+from federatedscope.nlp.model.model import ModelOutput
 
 
 def gelu(x):

@@ -15,11 +15,6 @@ from federatedscope.core.auxiliaries.utils import setup_seed, update_logger
 from federatedscope.core.auxiliaries.worker_builder import get_client_cls, get_server_cls
 from federatedscope.core.configs.config import global_cfg, CN
 from federatedscope.core.fed_runner import FedRunner
-from federatedscope.register import register_data, register_model, register_trainer, register_metric
-from federatedscope.contrib.data.data_builder import call_my_data
-from federatedscope.contrib.models.model import call_my_net
-from federatedscope.contrib.trainers.trainer import call_my_trainer
-from federatedscope.contrib.metrics.metric_builder import call_my_metric
 
 if os.environ.get('https_proxy'):
     del os.environ['https_proxy']
@@ -30,34 +25,39 @@ os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
 
 def extend_init_cfg(cfg):
+    cfg.federate.load_from = None
+
     cfg.model.bert_type = None
     cfg.model.dec_d_ffn = None
     cfg.model.dec_dropout_prob = None
     cfg.model.num_dec_layers = None
     cfg.model.num_labels = CN()
+    cfg.model.num_labels.sts = None
     cfg.model.num_labels.imdb = None
     cfg.model.num_labels.squad = None
     cfg.model.num_labels.cnndm = None
     cfg.model.label_smoothing = None
+    cfg.model.maml = None
 
-    cfg.eval.val_freq = None
     cfg.eval.n_best_size = None
     cfg.eval.max_answer_len = None
     cfg.eval.null_score_diff_threshold = None
 
     cfg.data.dir = CN()
+    cfg.data.dir.sts = None
     cfg.data.dir.imdb = None
     cfg.data.dir.squad = None
     cfg.data.dir.cnndm = None
     cfg.data.max_seq_len = CN()
+    cfg.data.max_seq_len.sts = None
     cfg.data.max_seq_len.imdb = None
     cfg.data.max_seq_len.squad = None
     cfg.data.max_seq_len.cnndm = None
     cfg.data.max_tgt_len = None
     cfg.data.max_query_len = None
     cfg.data.trunc_stride = None
-    cfg.data.num_labels = None
     cfg.data.all_batch_size = CN()
+    cfg.data.all_batch_size.sts = None
     cfg.data.all_batch_size.imdb = None
     cfg.data.all_batch_size.squad = None
     cfg.data.all_batch_size.cnndm = None
@@ -66,13 +66,13 @@ def extend_init_cfg(cfg):
     cfg.scheduler = CN()
     cfg.scheduler.type = None
     cfg.scheduler.warmup_ratio = None
+    cfg.scheduler.warmup_steps_enc = None
+    cfg.scheduler.warmup_steps_dec = None
 
     cfg.trainer.disp_freq = None
     cfg.trainer.val_freq = None
     cfg.trainer.grad_accum_count = None
     cfg.trainer.train_steps = None
-    cfg.trainer.generator_shard_size = None
-    cfg.trainer.save_dir = None
     cfg.trainer.test_only = None
 
     cfg.test = CN()
@@ -88,8 +88,9 @@ def extend_init_cfg(cfg):
 
     cfg.optimizer.lr_enc = None
     cfg.optimizer.lr_dec = None
-    cfg.optimizer.warmup_steps_enc = None
-    cfg.optimizer.warmup_steps_dec = None
+
+    cfg.maml = CN()
+    cfg.maml.inner_lr = None
 
     return cfg
 
@@ -100,9 +101,6 @@ def extend_cfg_client(init_cfg, cfg_client):
         cfg = cfg_client['client_{}'.format(i)]
         task = cfg.data.type
         cfg.data.batch_size = init_cfg.data.all_batch_size[task]
-        if init_cfg.trainer.save_dir:
-            cfg.trainer.save_dir = osp.join(init_cfg.trainer.save_dir, task)
-            os.mkdir(cfg.trainer.save_dir)
 
     with open(osp.join(init_cfg.outdir, 'config_client.yaml'), 'w') as outfile:
         from contextlib import redirect_stdout
@@ -118,18 +116,10 @@ def redirect_cfg_dir(cfg):
     cfg.test.result_path = cfg.outdir
     cfg.test.temp_dir = osp.join(cfg.outdir, cfg.test.temp_dir)
     os.mkdir(cfg.test.temp_dir)
-    if cfg.trainer.save_dir:
-        cfg.trainer.save_dir = osp.join(cfg.outdir, cfg.trainer.save_dir)
-        os.mkdir(cfg.trainer.save_dir)
+    if cfg.federate.save_to:
+        cfg.federate.save_to = osp.join(cfg.outdir, cfg.federate.save_to)
+        os.mkdir(cfg.federate.save_to)
     return cfg
-
-
-def register_all():
-    register_data('mydata', call_my_data)
-    register_model('mynet', call_my_net)
-    register_trainer('mytrainer', call_my_trainer)
-    register_metric('squad', call_my_metric)
-    register_metric('rouge', call_my_metric)
 
 
 if __name__ == '__main__':
@@ -140,7 +130,6 @@ if __name__ == '__main__':
     update_logger(init_cfg)
     init_cfg = redirect_cfg_dir(init_cfg)
     setup_seed(init_cfg.seed)
-    register_all()
 
     # set up tokenizer
     bos_token, eos_token, eoq_token = '[unused0]', '[unused1]', '[unused2]'
@@ -149,6 +138,8 @@ if __name__ == '__main__':
         additional_special_tokens=[bos_token, eos_token, eoq_token],
         skip_special_tokens=True,
     )
+    tokenizer.symbols = {'BOS': tokenizer.vocab[bos_token], 'EOS': tokenizer.vocab[eos_token],
+                         'PAD': tokenizer.pad_token_id, 'EOQ': tokenizer.vocab[eoq_token]}
     data, modified_cfg = get_data(config=init_cfg.clone(), tokenizer=tokenizer)
     init_cfg.merge_from_other_cfg(modified_cfg)
     init_cfg.freeze()

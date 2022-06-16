@@ -1,6 +1,6 @@
 from __future__ import division
 import torch
-from federatedscope.contrib.metrics.generation import penalties
+from federatedscope.nlp.metrics.generation import penalties
 
 
 class Beam(object):

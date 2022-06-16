@@ -42,8 +42,7 @@ class MetricCalculator(object):
         results = {}
         y_true, y_pred, y_prob = self._check_and_parse(ctx)
         for metric, func in self.eval_metric.items():
-            if ctx.cur_data_split == 'val' and \
-                    metric not in {'loss', 'avg_loss', 'total'}:
+            if ctx.cur_data_split == 'val' and metric not in {'loss', 'avg_loss', 'total'}:
                 continue
 
             results["{}_{}".format(ctx.cur_data_split,

@@ -1,15 +1,15 @@
 use_gpu: True
-device: 0
+device: 5
 seed: 12345
-outdir: exp/share_enc_step_agg/
+outdir: exp/test/isolated/
 federate:
   mode: standalone
-  method: local #fedavg
+  method: local
   local_update_steps: 1
   batch_or_epoch: epoch
-  total_round_num: 50
+  total_round_num: 1
   client_num: 3
-  save_to: ckpt
+#  save_to: ckpt
 data:
   type: mydata
   dir:
@@ -44,7 +44,7 @@ model:
     squad: 2
     cnndm: None
 personalization:
-  local_param: ['classifier', 'decoder', 'generator']
+  local_param: ['classifier']
 trainer:
   type: mytrainer
   disp_freq: 50

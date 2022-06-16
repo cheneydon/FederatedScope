@@ -1,5 +1,6 @@
-from federatedscope.contrib.metrics import *
 import federatedscope.register as register
+from federatedscope.contrib.metrics import *
+from federatedscope.nlp.metrics import *
 
 
 def get_metric(types):

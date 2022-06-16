@@ -1,15 +1,21 @@
 use_gpu: True
-device: 0
-seed: 12345
-outdir: exp/share_enc_step_agg/
+device: 5
+seed: 12 #123 #1234 #12345
+#outdir: exp/sts_imdb_squad/fedavg_ft/final/
+#outdir: exp/sts_imdb_squad/fedbn_ft/final/
+outdir: exp/sts_imdb_squad/maml/final_ft/
 federate:
   mode: standalone
-  method: local #fedavg
+#  method: fedavg
+#  method: fedbn
+  method: maml
   local_update_steps: 1
   batch_or_epoch: epoch
-  total_round_num: 50
+  total_round_num: 1
   client_num: 3
-  save_to: ckpt
+#  load_from: exp/sts_imdb_squad/fedavg/final/3/ckpt/
+#  load_from: exp/sts_imdb_squad/fedbn/final/3/ckpt/
+  load_from: exp/sts_imdb_squad/maml/final/3/ckpt/
 data:
   type: mydata
   dir:
@@ -44,7 +50,7 @@ model:
     squad: 2
     cnndm: None
 personalization:
-  local_param: ['classifier', 'decoder', 'generator']
+  local_param: ['classifier']
 trainer:
   type: mytrainer
   disp_freq: 50

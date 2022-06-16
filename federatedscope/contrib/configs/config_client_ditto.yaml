@@ -12,10 +12,10 @@ client_1:
     type: step
     warmup_ratio: 0.1
   trainer:
-    train_steps: 1000
+    train_steps: 250
     grad_accum_count: 1
   eval:
-    metrics: ['acc']
+    metrics: ['sts']
 client_2:
   federate:
     local_update_steps: 1
@@ -30,7 +30,7 @@ client_2:
     type: step
     warmup_ratio: 0.1
   trainer:
-    train_steps: 1000
+    train_steps: 250
     grad_accum_count: 1
   eval:
     metrics: ['acc']
@@ -48,37 +48,10 @@ client_3:
     type: step
     warmup_ratio: 0.1
   trainer:
-    train_steps: 1000
+    train_steps: 250
     grad_accum_count: 1
   eval:
     metrics: ['squad']
     n_best_size: 20  # total number of top-n best predictions to generate
     max_answer_len: 30  # maximum length of an answer that can be generated
     null_score_diff_threshold: 0  # if null_score - best_non_null is greater than the threshold predict null
-client_4:
-  federate:
-    local_update_steps: 1
-  model:
-    label_smoothing: 0.1
-  data:
-    type: cnndm
-  optimizer:
-    type: adam
-    lr_enc: 0.002
-    lr_dec: 0.2
-    warmup_steps_enc: 20000
-    warmup_steps_dec: 10000
-    weight_decay: 0.0
-    grad_clip: 0.0
-  trainer:
-    train_steps: 1000
-    grad_accum_count: 5
-    generator_shard_size: 32
-  eval:
-    metrics: ['rouge']
-  test:
-    beam_size: 5
-    min_length: 50
-    max_length: 200
-    block_trigram: True
-    alpha: 0.95

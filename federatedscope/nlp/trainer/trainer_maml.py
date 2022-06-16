@@ -5,6 +5,7 @@ import logging
 import re
 import torch
 import numpy as np
+import learn2learn as l2l
 from collections import OrderedDict
 from torch.utils.data import DataLoader
 from federatedscope.register import register_trainer
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 # Build your trainer here.
-class MyTrainer(GeneralTorchTrainer):
+class MAMLTrainer(GeneralTorchTrainer):
     def __init__(self, model, data, tokenizer, device, config, only_for_eval=False):
         self.cfg = config
         self.metric_calculator = MetricCalculator(config.eval.metrics)
@@ -138,6 +139,9 @@ class MyTrainer(GeneralTorchTrainer):
         setattr(ctx, "{}_squad_results".format(ctx.cur_data_split), [])
         setattr(ctx, 'accum_steps', 0)
 
+        maml = l2l.algorithms.MAML(self.ctx.model, lr=self.cfg.maml.inner_lr)
+        ctx.maml = maml.clone()
+
         if ctx.cfg.trainer.test_only:
             self._init_test(ctx)
 
@@ -145,7 +149,7 @@ class MyTrainer(GeneralTorchTrainer):
         task = ctx.cfg.data.type
         if task in {'sts', 'imdb'}:
             token_ids, token_type_ids, attention_mask, labels = [_.to(ctx.device) for _ in ctx.data_batch]
-            outputs = ctx.model(
+            outputs = ctx.maml(
                 input_ids=token_ids,
                 attention_mask=attention_mask,
                 token_type_ids=token_type_ids,
@@ -161,7 +165,7 @@ class MyTrainer(GeneralTorchTrainer):
         elif task == 'squad':
             token_ids, token_type_ids, attention_mask, start_positions, end_positions, example_indices = \
                 [_.to(ctx.device) for _ in ctx.data_batch]
-            outputs = ctx.model(
+            outputs = ctx.maml(
                 input_ids=token_ids,
                 attention_mask=attention_mask,
                 token_type_ids=token_type_ids,
@@ -185,7 +189,7 @@ class MyTrainer(GeneralTorchTrainer):
 
         elif task == 'cnndm':
             src, segs, mask_src, tgt = [_.to(ctx.device) for _ in ctx.data_batch]
-            outputs = ctx.model(
+            outputs = ctx.maml(
                 input_ids=src,
                 attention_mask=mask_src,
                 token_type_ids=segs,
@@ -208,17 +212,7 @@ class MyTrainer(GeneralTorchTrainer):
         cur_task = ctx.cfg.data.type
 
         ctx.accum_steps += 1
-        ctx.loss_task = ctx.loss_task / grad_accum_count
-        ctx.loss_task.backward()
-
-        if ctx.accum_steps == grad_accum_count:
-            if ctx.grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(ctx.model.parameters(), ctx.grad_clip)
-            for o, s in zip(ctx.optimizer, ctx.scheduler):
-                o.step()
-                s.step()
-                o.zero_grad()
-            ctx.accum_steps = 0
+        ctx.maml.adapt(ctx.loss_task, allow_nograd=True, allow_unused=True)
 
         if cur_step > 0 and ctx.accum_steps == 0:
             if cur_step > 1 and (cur_step % ctx.cfg.trainer.disp_freq == 0 or ctx.cur_batch_i + 1 == ctx.num_train_batch):
@@ -231,7 +225,7 @@ class MyTrainer(GeneralTorchTrainer):
                     y_pred = np.argmax(ctx.y_prob.detach().cpu().numpy(), axis=-1)[:, None]
                     cur_acc = eval_acc(y_true, y_pred)
 
-                logger.info('Epoch: [{}/{}][{}/{}]\t'
+                logger.info('(Inner) Epoch: [{}/{}][{}/{}]\t'
                             'LR: {:.2e}\t'
                             'Acc: {:.4f}\t'
                             'Loss: {loss.val:.4f} ({loss.avg:.4f})'
@@ -239,7 +233,7 @@ class MyTrainer(GeneralTorchTrainer):
                                     ctx.num_train_epoch,
                                     cur_step,
                                     ctx.cfg.trainer.train_steps,
-                                    ctx.scheduler[0].get_last_lr()[0],
+                                    ctx.cfg.maml.inner_lr,
                                     cur_acc,
                                     loss=ctx.get('loss_agg_{}'.format(ctx.cur_data_split))))
 
@@ -250,6 +244,8 @@ class MyTrainer(GeneralTorchTrainer):
                     self._save_model(ctx)
 
     def _hook_on_batch_end(self, ctx):
+        data_batch = ctx.data_batch
+
         # update statistics
         setattr(
             ctx, "loss_batch_total_{}".format(ctx.cur_data_split),
@@ -285,7 +281,46 @@ class MyTrainer(GeneralTorchTrainer):
         ctx.y_true = None
         ctx.y_prob = None
 
+        ctx.data_batch = data_batch
+
     def _hook_on_fit_end(self, ctx):
+        if ctx.cur_data_split == 'train':
+            self._hook_on_batch_forward(ctx)
+            self._hook_on_batch_forward_regularizer(ctx)
+
+            cur_task = ctx.cfg.data.type
+            for o in ctx.optimizer:
+                o.zero_grad()
+            ctx.loss_task.backward()
+            for o in ctx.optimizer:
+                o.step()
+
+            if cur_task == 'sts':
+                y_true = ctx.y_true.detach().cpu().numpy().squeeze()
+                y_pred = ctx.y_prob.detach().cpu().numpy().squeeze()
+                cur_acc = compute_sts_metrics(y_pred, y_true)['corr']
+            elif cur_task in {'imdb', 'squad', 'cnndm'}:
+                y_true = ctx.y_true.detach().cpu().numpy()[:, None]
+                y_pred = np.argmax(ctx.y_prob.detach().cpu().numpy(), axis=-1)[:, None]
+                cur_acc = eval_acc(y_true, y_pred)
+
+            logger.info('(Outer) Epoch: [{}/{}][{}/{}]\t'
+                        'LR: {:.2e}\t'
+                        'Acc: {:.4f}\t'
+                        'Loss: {loss.val:.4f} ({loss.avg:.4f})'
+                        .format(ctx.cur_epoch_i + 1,
+                                ctx.num_train_epoch,
+                                ctx.cur_batch_i + 1,
+                                ctx.num_train_batch,
+                                ctx.cfg.optimizer.lr,
+                                cur_acc,
+                                loss=ctx.get('loss_agg_{}'.format(ctx.cur_data_split))))
+
+        ctx.data_batch = None
+        ctx.maml = None
+
+        """Evaluate metrics.
+        """
         if ctx.cur_data_split != 'train':
             if len(ctx.get("{}_y_true".format(ctx.cur_data_split))) > 0:
                 setattr(
@@ -299,10 +334,10 @@ class MyTrainer(GeneralTorchTrainer):
             setattr(ctx, 'eval_metrics', results)
 
 
-def call_my_trainer(trainer_type):
-    if trainer_type == 'mytrainer':
-        trainer_builder = MyTrainer
+def call_maml_trainer(trainer_type):
+    if trainer_type == 'maml_trainer':
+        trainer_builder = MAMLTrainer
         return trainer_builder
 
 
-register_trainer('mytrainer', call_my_trainer)
+register_trainer('maml_trainer', call_maml_trainer)

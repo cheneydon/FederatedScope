@@ -4,10 +4,8 @@ from federatedscope.core.trainers.context import Context
 from federatedscope.core.auxiliaries.criterion_builder import get_criterion
 from federatedscope.core.auxiliaries.model_builder import get_trainable_para_names
 from federatedscope.core.auxiliaries.regularizer_builder import get_regularizer
-from federatedscope.contrib.auxiliaries.optimizer_builder import get_optimizer
-from federatedscope.contrib.auxiliaries.scheduler_builder import get_scheduler
-from federatedscope.contrib.auxiliaries.loss_builder import abs_loss
-from federatedscope.contrib.metrics.generation.predictor import build_predictor
+from federatedscope.core.auxiliaries.optimizer_builder import get_optimizer
+from federatedscope.core.auxiliaries.scheduler_builder import get_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -18,46 +16,63 @@ class MyContext(Context):
             self.trainable_para_names = get_trainable_para_names(self.model)
             self.criterion = get_criterion(self.cfg.criterion.type, self.device)
             self.regularizer = get_regularizer(self.cfg.regularizer.type)
-            self.val_metrics = None
-            self.test_metrics = None
+            self.val_metrics, self.test_metrics = None, None
 
-            if self.cfg.data.type == 'cnndm':
-                self.optimizer = get_optimizer(
-                    self.cfg.optimizer.type,
-                    self.model,
-                    [self.cfg.optimizer.lr_enc, self.cfg.optimizer.lr_dec],
-                    weight_decay=self.cfg.optimizer.weight_decay,
-                    max_grad_norm=self.cfg.optimizer.grad_clip,
-                    warmup_steps_enc=self.cfg.optimizer.warmup_steps_enc,
-                    warmup_steps_dec=self.cfg.optimizer.warmup_steps_dec)
-
-                self.symbols = {'BOS': self.tokenizer.vocab['[unused0]'], 'EOS': self.tokenizer.vocab['[unused1]'],
-                                'PAD': self.tokenizer.pad_token_id, 'EOQ': self.tokenizer.vocab['[unused2]']}
-                self.train_loss_func = abs_loss(self.model.generator, self.symbols, self.model.vocab_size,
-                                                self.model.bert.device, train=True, label_smoothing=self.cfg.model.label_smoothing)
-                self.val_loss_func = abs_loss(self.model.generator, self.symbols, self.model.vocab_size,
-                                              self.model.bert.device, train=False)
-                self.test_loss_func = self.val_loss_func
-                self.predictor = build_predictor(self.cfg.test, self.tokenizer, self.symbols, self.model, logger)
-
+            cur_task = self.cfg.data.type
+            if self.cfg.trainer.train_steps is not None:
+                num_steps = self.cfg.trainer.train_steps * self.cfg.federate.total_round_num
             else:
+                num_steps = len(self.train_loader) * self.cfg.federate.local_update_steps * \
+                            self.cfg.federate.total_round_num
+
+            if cur_task in {'sts', 'imdb', 'squad'}:
                 self.optimizer = get_optimizer(
                     self.cfg.optimizer.type,
                     self.model,
                     self.cfg.optimizer.lr,
-                    weight_decay=self.cfg.optimizer.weight_decay)
-                self.grad_clip = self.cfg.optimizer.grad_clip
-
-                if self.cfg.trainer.train_steps is not None:
-                    num_steps = self.cfg.trainer.train_steps * self.cfg.federate.total_round_num
-                else:
-                    num_steps = len(self.train_loader) * self.cfg.federate.local_update_steps * \
-                                self.cfg.federate.total_round_num
+                    weight_decay=self.cfg.optimizer.weight_decay,
+                )
                 self.scheduler = get_scheduler(
                     self.cfg.scheduler.type,
                     self.optimizer,
                     total_steps=num_steps,
-                    warmup_steps=int(self.cfg.scheduler.warmup_ratio * num_steps))
+                    warmup_steps=int(self.cfg.scheduler.warmup_ratio * num_steps),
+                )
+                self.optimizer = [self.optimizer]
+                self.scheduler = [self.scheduler]
+
+            elif cur_task in {'cnndm'}:
+                enc_params = [p for n, p in self.model.named_parameters() if n.startswith('bert')]
+                dec_params = [p for n, p in self.model.named_parameters() if not n.startswith('bert')]
+                enc_optimizer = get_optimizer(
+                    self.cfg.optimizer.type,
+                    enc_params,
+                    self.cfg.optimizer.lr_enc,
+                    weight_decay=self.cfg.optimizer.weight_decay,
+                )
+                dec_optimizer = get_optimizer(
+                    self.cfg.optimizer.type,
+                    dec_params,
+                    self.cfg.optimizer.lr_dec,
+                    weight_decay=self.cfg.optimizer.weight_decay,
+                )
+                enc_scheduler = get_scheduler(
+                    self.cfg.scheduler.type,
+                    enc_optimizer,
+                    total_steps=num_steps,
+                    warmup_steps=self.cfg.scheduler.warmup_steps_enc,
+                )
+                dec_scheduler = get_scheduler(
+                    self.cfg.scheduler.type,
+                    dec_optimizer,
+                    total_steps=num_steps,
+                    warmup_steps=self.cfg.scheduler.warmup_steps_dec,
+                )
+                self.optimizer = [enc_optimizer, dec_optimizer]
+                self.scheduler = [enc_scheduler, dec_scheduler]
+                self.padding_idx = self.tokenizer.pad_token_id
+
+            self.grad_clip = self.cfg.optimizer.grad_clip
 
         elif self.cfg.backend == 'tensorflow':
             self.trainable_para_names = self.model.trainable_variables()
@@ -72,8 +87,8 @@ class MyContext(Context):
         # Process training data
         if self.train_data is not None or self.train_loader is not None:
             # Calculate the number of update steps during training given the local_update_steps
-            num_train_batch, num_train_batch_last_epoch, num_train_epoch, num_total_train_batch = self.pre_calculate_batch_epoch_num(
-                self.cfg.federate.local_update_steps)
+            num_train_batch, num_train_batch_last_epoch, num_train_epoch, num_total_train_batch = \
+                self.pre_calculate_batch_epoch_num(self.cfg.federate.local_update_steps)
 
             self.num_train_epoch = num_train_epoch
             self.num_train_batch = num_train_batch
