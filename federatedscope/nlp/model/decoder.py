@@ -403,7 +403,6 @@ class TransformerDecoder(nn.Module):
         self.embeddings = embeddings
         self.pos_emb = PositionalEncoding(dropout,self.embeddings.embedding_dim)
 
-
         # Build TransformerDecoder.
         self.transformer_layers = nn.ModuleList(
             [TransformerDecoderLayer(d_model, heads, d_ff, dropout)

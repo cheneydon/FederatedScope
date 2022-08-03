@@ -1,0 +1,53 @@
+use_gpu: True
+device: 1
+seed: 12345
+outdir: exp/pretrain/mlm/
+federate:
+  mode: standalone
+  method: fedavg
+  local_update_steps: 1
+  batch_or_epoch: epoch
+  total_round_num: 25
+  client_num: 31
+  num_grouped_clients: [1, 5, 5, 5, 5, 5, 5]
+  save_to: ckpt/global_model.pt
+data:
+  type: fednlp_data
+  task: pretrain
+  root: /mnt/dongchenhe.dch/datasets/fednlp/v2/
+  max_pretrain_seq_len: 384
+  max_pretrain_tgt_len: 128
+  batch_size: 4
+  collator: mlm
+  downstream_tasks: ['imdb', 'agnews', 'squad', 'newsqa', 'cnndm', 'msqg']
+  num_workers: 0
+  cache_dir: cache
+optimizer:
+  type: AdamW
+  lr_enc: 3e-5
+  lr_dec: 3e-2
+  weight_decay: 0.01
+  grad_clip: 1.0
+scheduler:
+  type: step
+  warmup_ratio_enc: 0.1
+  warmup_ratio_dec: 0.05
+model:
+  type: fednlp_model
+  bert_type: google/bert_uncased_L-2_H-128_A-2
+  num_dec_layers: 1
+personalization:
+  local_param: ['classifier', 'decoder', 'generator']
+trainer:
+  type: fednlp_trainer
+  train_steps: 500
+  grad_accum_count: 16
+  disp_freq: 50
+  val_freq: 100000000  # eval freq across batches
+eval:
+  metrics: ['acc']
+  split: ['test']
+  report: ['raw']
+  freq: 100000000  # eval freq across rounds
+test:
+  temp_dir: temp

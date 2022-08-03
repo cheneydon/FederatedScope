@@ -1,85 +1,91 @@
 import os
 import os.path as osp
-import random
 import logging
 import torch
-from torch.utils.data.dataset import TensorDataset
+from federatedscope.nlp.dataset.utils import read_json_file, split_sent, DictDataset, NUM_DEBUG
 
 logger = logging.getLogger(__name__)
+task = 'imdb'
 
 
-def read_file(path):
-    with open(path) as f:
-        data = f.readline()
-    return data
+def create_imdb_examples(root, split, debug=False):
+    data = read_json_file(osp.join(root, split + '.json'))
+    if debug:
+        data = data[:NUM_DEBUG]
 
-
-def create_imdb_examples(root, split):
     examples = []
-    pos_files = os.listdir(osp.join(root, split, 'pos'))
-    for file in pos_files:
-        path = osp.join(root, split, 'pos', file)
-        data = read_file(path)
-        examples.append((data, 1))
-    neg_files = os.listdir(osp.join(root, split, 'neg'))
-    for file in neg_files:
-        path = osp.join(root, split, 'neg', file)
-        data = read_file(path)
-        examples.append((data, 0))
-    random.shuffle(examples)
-
-    if split == 'train':
-        num_train_samples = int(0.9 * len(examples))
-        return examples[:num_train_samples], examples[num_train_samples:]
-    elif split == 'test':
-        return examples
+    for ex in data:
+        examples.append((ex['text'], ex['label']))
+    return examples
 
 
-def create_imdb_dataset(root, split, tokenizer, max_seq_len, model_type, cache_dir=''):
-    logger.info('Preprocessing {} {} dataset'.format('imdb', split))
-    cache_file = osp.join(cache_dir, 'imdb', '_'.join(['imdb', split, str(max_seq_len), model_type]) + '.pt')
+def create_imdb_dataset(root, split, tokenizer, max_seq_len, model_type, cache_dir='', client_id=None,
+                        pretrain=False, debug=False, **kwargs):
+    if pretrain:
+        return create_imdb_pretrain_dataset(root, split, tokenizer, max_seq_len, model_type, cache_dir, client_id, debug)
+
+    if client_id is None:
+        save_dir = osp.join(cache_dir, 'finetune', task)
+        cache_file = osp.join(save_dir, '_'.join([task, split, str(max_seq_len), model_type.split('/')[-1]]) + '.pt')
+    else:
+        save_dir = osp.join(cache_dir, 'finetune', str(client_id))
+        cache_file = osp.join(save_dir, split + '.pt')
+
     if osp.exists(cache_file):
         logger.info('Loading cache file from \'{}\''.format(cache_file))
         cache_data = torch.load(cache_file)
         examples = cache_data['examples']
         encoded_inputs = cache_data['encoded_inputs']
     else:
-        examples = create_imdb_examples(root, split)
-        encoded_inputs = None
+        examples = create_imdb_examples(root, split, debug)
+        texts = [ex[0] for ex in examples]
+        encoded_inputs = tokenizer(texts, padding='max_length', truncation=True, max_length=max_seq_len, return_tensors='pt')
 
-    def _create_dataset(examples_, encoded_inputs_=None):
-        texts = [ex[0] for ex in examples_]
-        labels = [ex[1] for ex in examples_]
-        if encoded_inputs_ is None:
-            encoded_inputs_ = tokenizer(texts, padding=True, truncation=True, max_length=max_seq_len, return_tensors='pt')
+        if cache_dir:
+            logger.info('Saving cache file to \'{}\''.format(cache_file))
+            os.makedirs(save_dir, exist_ok=True)
+            torch.save({'examples': examples,
+                        'encoded_inputs': encoded_inputs}, cache_file)
 
-        dataset = TensorDataset(encoded_inputs_.input_ids, encoded_inputs_.token_type_ids,
-                                encoded_inputs_.attention_mask, torch.LongTensor(labels))
-        return dataset, encoded_inputs_, examples_
+    labels = [ex[1] for ex in examples]
+    dataset = DictDataset({'token_ids': encoded_inputs.input_ids,
+                           'token_type_ids': encoded_inputs.token_type_ids,
+                           'attention_mask': encoded_inputs.attention_mask,
+                           'labels': torch.LongTensor(labels)})
+    return dataset, encoded_inputs, examples
 
-    if split == 'train':
-        if encoded_inputs is not None:
-            return _create_dataset(examples[0], encoded_inputs[0]), _create_dataset(examples[1], encoded_inputs[1])
-        else:
-            train_dataset, train_encoded, train_examples = _create_dataset(examples[0])
-            val_dataset, val_encoded, val_examples = _create_dataset(examples[1])
-            if cache_dir:
-                logger.info('Saving cache file to \'{}\''.format(cache_file))
-                os.makedirs(osp.join(cache_dir, 'imdb'), exist_ok=True)
-                torch.save({'examples': examples,
-                            'encoded_inputs': [train_encoded, val_encoded]}, cache_file)
 
-        return (train_dataset, train_encoded, train_examples), (val_dataset, val_encoded, val_examples)
+def create_imdb_pretrain_dataset(root, split, tokenizer, max_seq_len, model_type, cache_dir='', client_id=None, debug=False):
+    if client_id is None:
+        save_dir = osp.join(cache_dir, 'pretrain', task)
+        cache_file = osp.join(save_dir, '_'.join([task, split, str(max_seq_len), model_type.split('/')[-1]]) + '.pt')
+    else:
+        save_dir = osp.join(cache_dir, 'pretrain', str(client_id))
+        cache_file = osp.join(save_dir, split + '.pt')
 
-    elif split == 'test':
-        if encoded_inputs is not None:
-            return _create_dataset(examples, encoded_inputs)
-        else:
-            test_dataset, test_encoded, test_examples = _create_dataset(examples)
-            if cache_dir:
-                logger.info('Saving cache file to \'{}\''.format(cache_file))
-                os.makedirs(osp.join(cache_dir, 'imdb'), exist_ok=True)
-                torch.save({'examples': examples,
-                            'encoded_inputs': test_encoded}, cache_file)
+    if osp.exists(cache_file):
+        logger.info('Loading cache file from \'{}\''.format(cache_file))
+        cache_data = torch.load(cache_file)
+        examples = cache_data['examples']
+        encoded_inputs = cache_data['encoded_inputs']
+    else:
+        examples = create_imdb_examples(root, split, debug)
+        texts = [ex[0] for ex in examples]
+        texts = split_sent(texts, eoq=tokenizer.eoq_token)
+        encoded_inputs = tokenizer(texts, padding='max_length', truncation=True, max_length=max_seq_len, return_tensors='pt')
+        num_non_padding = (encoded_inputs.input_ids != tokenizer.pad_token_id).sum(dim=-1)
+        for i, pad_idx in enumerate(num_non_padding):
+            encoded_inputs.input_ids[i, 0] = tokenizer.bos_token_id
+            encoded_inputs.input_ids[i, pad_idx - 1] = tokenizer.eos_token_id
 
-        return test_dataset, test_encoded, test_examples
+        if cache_dir:
+            logger.info('Saving cache file to \'{}\''.format(cache_file))
+            os.makedirs(save_dir, exist_ok=True)
+            torch.save({'examples': examples,
+                        'encoded_inputs': encoded_inputs}, cache_file)
+
+    example_indices = torch.arange(encoded_inputs.input_ids.size(0), dtype=torch.long)
+    dataset = DictDataset({'token_ids': encoded_inputs.input_ids,
+                           'attention_mask': encoded_inputs.attention_mask,
+                           'example_indices': example_indices})
+    return dataset, encoded_inputs, examples

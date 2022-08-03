@@ -8,7 +8,6 @@ if DEV_MODE:
     sys.path.append(file_dir)
 
 import copy
-from transformers.models.bert import BertTokenizerFast
 from federatedscope.core.cmd_args import parse_args
 from federatedscope.core.auxiliaries.data_builder import get_data
 from federatedscope.core.auxiliaries.utils import setup_seed, update_logger
@@ -21,87 +20,10 @@ if os.environ.get('https_proxy'):
 if os.environ.get('http_proxy'):
     del os.environ['http_proxy']
 
-os.environ['TOKENIZERS_PARALLELISM'] = 'false'
-
-
-def extend_init_cfg(cfg):
-    cfg.federate.load_from = None
-
-    cfg.model.bert_type = None
-    cfg.model.dec_d_ffn = None
-    cfg.model.dec_dropout_prob = None
-    cfg.model.num_dec_layers = None
-    cfg.model.num_labels = CN()
-    cfg.model.num_labels.sts = None
-    cfg.model.num_labels.imdb = None
-    cfg.model.num_labels.squad = None
-    cfg.model.num_labels.cnndm = None
-    cfg.model.label_smoothing = None
-    cfg.model.maml = None
-
-    cfg.eval.n_best_size = None
-    cfg.eval.max_answer_len = None
-    cfg.eval.null_score_diff_threshold = None
-
-    cfg.data.dir = CN()
-    cfg.data.dir.sts = None
-    cfg.data.dir.imdb = None
-    cfg.data.dir.squad = None
-    cfg.data.dir.cnndm = None
-    cfg.data.max_seq_len = CN()
-    cfg.data.max_seq_len.sts = None
-    cfg.data.max_seq_len.imdb = None
-    cfg.data.max_seq_len.squad = None
-    cfg.data.max_seq_len.cnndm = None
-    cfg.data.max_tgt_len = None
-    cfg.data.max_query_len = None
-    cfg.data.trunc_stride = None
-    cfg.data.all_batch_size = CN()
-    cfg.data.all_batch_size.sts = None
-    cfg.data.all_batch_size.imdb = None
-    cfg.data.all_batch_size.squad = None
-    cfg.data.all_batch_size.cnndm = None
-    cfg.data.cache_dir = None
-
-    cfg.scheduler = CN()
-    cfg.scheduler.type = None
-    cfg.scheduler.warmup_ratio = None
-    cfg.scheduler.warmup_steps_enc = None
-    cfg.scheduler.warmup_steps_dec = None
-
-    cfg.trainer.disp_freq = None
-    cfg.trainer.val_freq = None
-    cfg.trainer.grad_accum_count = None
-    cfg.trainer.train_steps = None
-    cfg.trainer.test_only = None
-
-    cfg.test = CN()
-    cfg.test.visible_gpus = cfg.device
-    cfg.test.result_path = None
-    cfg.test.beam_size = None
-    cfg.test.min_length = None
-    cfg.test.max_length = None
-    cfg.test.block_trigram = None
-    cfg.test.alpha = None
-    cfg.test.recall_eval = None
-    cfg.test.temp_dir = None
-
-    cfg.optimizer.lr_enc = None
-    cfg.optimizer.lr_dec = None
-
-    cfg.maml = CN()
-    cfg.maml.inner_lr = None
-
-    return cfg
+os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 
 
 def extend_cfg_client(init_cfg, cfg_client):
-    num_clients = len([k for k in cfg_client.keys() if k.startswith('client')])
-    for i in range(1, num_clients + 1):
-        cfg = cfg_client['client_{}'.format(i)]
-        task = cfg.data.type
-        cfg.data.batch_size = init_cfg.data.all_batch_size[task]
-
     with open(osp.join(init_cfg.outdir, 'config_client.yaml'), 'w') as outfile:
         from contextlib import redirect_stdout
         with redirect_stdout(outfile):
@@ -109,47 +31,76 @@ def extend_cfg_client(init_cfg, cfg_client):
             tmp_cfg.cfg_check_funcs = []
             print(tmp_cfg.dump())
 
+    if init_cfg.federate.num_grouped_clients is None:
+        num_clients = init_cfg.federate.client_num
+        for i in range(1, num_clients + 1):
+            cfg = cfg_client['client_{}'.format(i)]
+            cfg.data.batch_size = init_cfg.data.all_batch_size[cfg.data.task]
+            if init_cfg.data.debug:
+                cfg.trainer.train_steps = 5
+    else:
+        num_grouped_clients = init_cfg.federate.num_grouped_clients
+        client_start_id = 1
+        for group_id, num_clients in enumerate(num_grouped_clients):
+            group_cfg = cfg_client['client_group_{}'.format(group_id + 1)]
+            group_cfg.data.batch_size = init_cfg.data.all_batch_size[group_cfg.data.task]
+            if init_cfg.data.debug:
+                group_cfg.trainer.train_steps = 5
+            for client_id in range(client_start_id, client_start_id + num_clients):
+                cfg_client['client_{}'.format(client_id)] = group_cfg
+            client_start_id += num_clients
+
     return cfg_client
 
 
-def redirect_cfg_dir(cfg):
+def extend_cfg(cfg):
     cfg.test.result_path = cfg.outdir
     cfg.test.temp_dir = osp.join(cfg.outdir, cfg.test.temp_dir)
-    os.mkdir(cfg.test.temp_dir)
+    os.makedirs(cfg.test.temp_dir, exist_ok=True)
     if cfg.federate.save_to:
         cfg.federate.save_to = osp.join(cfg.outdir, cfg.federate.save_to)
-        os.mkdir(cfg.federate.save_to)
+        save_dir = '/'.join(osp.normpath(cfg.federate.save_to).split('/')[:-1])
+        os.makedirs(save_dir, exist_ok=True)
+
+    if cfg.federate.num_grouped_clients is not None and cfg.data.task == 'pretrain':
+        downstream_tasks = []
+        num_grouped_clients = cfg.federate.num_grouped_clients
+        for group_id, num_clients in enumerate(num_grouped_clients):
+            downstream_tasks += [cfg.data.downstream_tasks[group_id]] * num_clients
+        cfg.data.downstream_tasks = downstream_tasks
+
+    if init_cfg.data.debug:
+        if init_cfg.federate.total_round_num > 5:
+            init_cfg.federate.total_round_num = 5
+        # if init_cfg.federate.client_num > 5:
+        #     init_cfg.federate.client_num = 5
+        #     init_cfg.aggregator.num_agg_groups = 1
+        # init_cfg.federate.save_to = ''
+        init_cfg.data.cache_dir = ''
+        init_cfg.trainer.train_steps = 5
+
     return cfg
 
 
 if __name__ == '__main__':
-    init_cfg = extend_init_cfg(global_cfg.clone())
+    init_cfg = global_cfg.clone()
     args = parse_args()
     init_cfg.merge_from_file(args.cfg_file)
     init_cfg.merge_from_list(args.opts)
     update_logger(init_cfg)
-    init_cfg = redirect_cfg_dir(init_cfg)
     setup_seed(init_cfg.seed)
-
-    # set up tokenizer
-    bos_token, eos_token, eoq_token = '[unused0]', '[unused1]', '[unused2]'
-    tokenizer = BertTokenizerFast.from_pretrained(
-        init_cfg.model.bert_type,
-        additional_special_tokens=[bos_token, eos_token, eoq_token],
-        skip_special_tokens=True,
-    )
-    tokenizer.symbols = {'BOS': tokenizer.vocab[bos_token], 'EOS': tokenizer.vocab[eos_token],
-                         'PAD': tokenizer.pad_token_id, 'EOQ': tokenizer.vocab[eoq_token]}
-    data, modified_cfg = get_data(config=init_cfg.clone(), tokenizer=tokenizer)
-    init_cfg.merge_from_other_cfg(modified_cfg)
+    init_cfg = extend_cfg(init_cfg)
     init_cfg.freeze()
 
     # allow different settings for different clients
-    cfg_client = CN.load_cfg(open(args.cfg_client, 'r'))
-    cfg_client = extend_cfg_client(init_cfg, cfg_client)
+    if args.cfg_client is None:
+        cfg_client = None
+    else:
+        cfg_client = CN.load_cfg(open(args.cfg_client, 'r'))
+        cfg_client = extend_cfg_client(init_cfg, cfg_client)
 
+    data, _ = get_data(config=init_cfg, client_config=cfg_client)
     runner = FedRunner(data=data,
-                       tokenizer=tokenizer,
                        server_class=get_server_cls(init_cfg),
                        client_class=get_client_cls(init_cfg),
                        config=init_cfg.clone(),

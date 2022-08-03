@@ -5,6 +5,10 @@ This list is constantly being updated. Feel free to contribute!
 ### 2022
 | Title | Venue | Link | 
 | --- | --- | --- | 
+| Pretrained Models for Multilingual Federated Learning| NAACL | [pdf](https://arxiv.org/pdf/2206.02291.pdf), [code](https://github.com/orionw/Multilingual-Federated-Learning) |
+| Federated Non-negative Matrix Factorization for Short Texts Topic Modeling with Mutual Information | IJCNN | [pdf](https://arxiv.org/pdf/2205.13300.pdf) |
+| Federated Split BERT for Heterogeneous Text Classification | IJCNN | [pdf](https://arxiv.org/pdf/2205.13299.pdf) |
+| Federated Learning for Violence Incident Prediction in a Simulated Cross-institutional Psychiatric Setting | Expert Systems with Applications | [pdf](https://arxiv.org/pdf/2205.10234.pdf) |
 | FedBERT: When Federated Learning Meets Pre-Training | TIST | [pdf](https://dl.acm.org/doi/pdf/10.1145/3510033) |
 | FedKC: Federated Knowledge Composition for Multilingual Natural Language Understanding | WWW | [pdf](https://dl.acm.org/doi/pdf/10.1145/3485447.3511988) |
 

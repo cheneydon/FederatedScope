@@ -207,36 +207,34 @@ class Trainer(object):
         for hook in hooks_set["on_fit_start"]:
             hook(self.ctx)
 
-        test_only = self.ctx.cfg.trainer.test_only
-        if not test_only or (test_only and self.ctx.cur_data_split != 'train'):
-            for epoch_i in range(self.ctx.get(
-                    "num_{}_epoch".format(dataset_name))):
-                self.ctx.cur_epoch_i = epoch_i
-                for hook in hooks_set["on_epoch_start"]:
-                    hook(self.ctx)
-
-                for batch_i in range(
-                        self.ctx.get("num_{}_batch".format(dataset_name))):
-                    self.ctx.cur_batch_i = batch_i
-                    for hook in hooks_set["on_batch_start"]:
-                        hook(self.ctx)
-                    for hook in hooks_set["on_batch_forward"]:
-                        hook(self.ctx)
-                    if self.ctx.cur_mode == 'train':
-                        for hook in hooks_set["on_batch_backward"]:
-                            hook(self.ctx)
-                    for hook in hooks_set["on_batch_end"]:
-                        hook(self.ctx)
-
-                    # Break in the final epoch
-                    if self.ctx.cur_mode == 'train' and epoch_i == self.ctx.num_train_epoch - 1:
-                        if batch_i >= self.ctx.num_train_batch_last_epoch - 1:
-                            break
-
-                for hook in hooks_set["on_epoch_end"]:
-                    hook(self.ctx)
-            for hook in hooks_set["on_fit_end"]:
+        for epoch_i in range(self.ctx.get(
+                "num_{}_epoch".format(dataset_name))):
+            self.ctx.cur_epoch_i = epoch_i
+            for hook in hooks_set["on_epoch_start"]:
                 hook(self.ctx)
+
+            for batch_i in range(
+                    self.ctx.get("num_{}_batch".format(dataset_name))):
+                self.ctx.cur_batch_i = batch_i
+                for hook in hooks_set["on_batch_start"]:
+                    hook(self.ctx)
+                for hook in hooks_set["on_batch_forward"]:
+                    hook(self.ctx)
+                if self.ctx.cur_mode == 'train':
+                    for hook in hooks_set["on_batch_backward"]:
+                        hook(self.ctx)
+                for hook in hooks_set["on_batch_end"]:
+                    hook(self.ctx)
+
+                # Break in the final epoch
+                if self.ctx.cur_mode == 'train' and epoch_i == self.ctx.num_train_epoch - 1:
+                    if batch_i >= self.ctx.num_train_batch_last_epoch - 1:
+                        break
+
+            for hook in hooks_set["on_epoch_end"]:
+                hook(self.ctx)
+        for hook in hooks_set["on_fit_end"]:
+            hook(self.ctx)
 
         self.ctx.pop_mode()
         self.ctx.reset_used_dataset()
@@ -246,7 +244,6 @@ class Trainer(object):
                 pass
             else:
                 self.ctx.model.to(torch.device("cpu"))
-                # torch.cuda.empty_cache()
 
     def update(self, model_parameters):
         '''
@@ -379,7 +376,7 @@ class GeneralTorchTrainer(Trainer):
         # TODO: The return values should be more flexible? Now: sample_num, model_para, results={k:v}
 
         return self.ctx.num_samples_train, self.get_model_para(
-        ), self.ctx.get("eval_metrics", None)
+        ), self.ctx.eval_metrics
 
     def update(self, model_parameters):
         '''
@@ -428,9 +425,13 @@ class GeneralTorchTrainer(Trainer):
         original_batch_num = self.ctx["num_train_batch"]
         self.ctx["num_train_epoch"] = 1
         self.ctx["num_train_batch"] = self.cfg.trainer.finetune.steps
+        # self.ctx["num_train_epoch"] = self.cfg.trainer.finetune.steps
+        # self.ctx["num_train_batch"] = self.cfg.trainer.finetune.steps
 
         # do the fine-tuning process
+        self.ctx.finetune = True
         self.train(target_data_split_name, hooks_set)
+        self.ctx.finetune = False
 
         # restore the state before fine-tuning
         if len(require_grad_changed_paras) > 0:
@@ -510,6 +511,10 @@ class GeneralTorchTrainer(Trainer):
     def _hook_on_batch_forward(self, ctx):
         x, label = [_.to(ctx.device) for _ in ctx.data_batch]
         pred = ctx.model(x)
+        if self.cfg.model.task.endswith('Regression'):
+            label = label.float()
+        else:
+            label = label.long()
         if len(label.size()) == 0:
             label = label.unsqueeze(0)
         ctx.loss_batch = ctx.criterion(pred, label)

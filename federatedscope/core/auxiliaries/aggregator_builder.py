@@ -12,6 +12,14 @@ def get_aggregator(method, model=None, device=None, online=False, config=None):
     else:
         from federatedscope.core.aggregator import ClientsAvgAggregator, OnlineClientsAvgAggregator, ServerClientsInterpolateAggregator, FedOptAggregator, NoCommunicationAggregator
 
+    if config.trainer.type == 'pfednlp_trainer':
+        from federatedscope.core.aggregator import PFedNLPAggregator
+        return PFedNLPAggregator(model=model, config=config, device=device)
+
+    if config.trainer.type == 'pfednlp_contrast_trainer':
+        from federatedscope.core.aggregator import PFedNLPContrastAggregator
+        return PFedNLPContrastAggregator(model=model, config=config, device=device)
+
     if method.lower() in constants.AGGREGATOR_TYPE:
         aggregator_type = constants.AGGREGATOR_TYPE[method.lower()]
     else:

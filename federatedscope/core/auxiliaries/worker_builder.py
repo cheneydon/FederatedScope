@@ -15,6 +15,18 @@ def get_client_cls(cfg):
         from federatedscope.vertical_fl.worker import vFLClient
         return vFLClient
 
+    if cfg.trainer.type == 'fednlp_trainer':
+        from federatedscope.nlp.worker import FedNLPClient
+        return FedNLPClient
+
+    if cfg.trainer.type == 'pfednlp_trainer':
+        from federatedscope.nlp.worker import PFedNLPClient
+        return PFedNLPClient
+
+    if cfg.trainer.type == 'pfednlp_contrast_trainer':
+        from federatedscope.nlp.worker import PFedNLPContrastClient
+        return PFedNLPContrastClient
+
     if cfg.federate.method.lower() in constants.CLIENTS_TYPE:
         client_type = constants.CLIENTS_TYPE[cfg.federate.method.lower()]
     else:
@@ -62,6 +74,18 @@ def get_server_cls(cfg):
     if cfg.vertical.use:
         from federatedscope.vertical_fl.worker import vFLServer
         return vFLServer
+
+    if cfg.trainer.type == 'fednlp_trainer':
+        from federatedscope.nlp.worker import FedNLPServer
+        return FedNLPServer
+
+    if cfg.trainer.type == 'pfednlp_trainer':
+        from federatedscope.nlp.worker import PFedNLPServer
+        return PFedNLPServer
+
+    if cfg.trainer.type == 'pfednlp_contrast_trainer':
+        from federatedscope.nlp.worker import PFedNLPContrastServer
+        return PFedNLPContrastServer
 
     if cfg.federate.method.lower() in constants.SERVER_TYPE:
         client_type = constants.SERVER_TYPE[cfg.federate.method.lower()]

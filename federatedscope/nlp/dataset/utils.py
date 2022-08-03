@@ -3,15 +3,21 @@ Utils for language models.
 from https://github.com/litian96/FedProx/blob/master/flearn/utils/language_utils.py 
 """
 
+import sys
+import time
 import re
 import numpy as np
+import json
 from collections import Counter
+from nltk.tokenize import sent_tokenize
+from torch.utils.data.dataset import Dataset
 
 # ------------------------
 # utils for shakespeare dataset
 
 ALL_LETTERS = "\n !\"&'(),-.0123456789:;>?ABCDEFGHIJKLMNOPQRSTUVWXYZ[]abcdefghijklmnopqrstuvwxyz}"
 NUM_LETTERS = len(ALL_LETTERS)
+NUM_DEBUG = 20
 
 
 def _one_hot(index, size):
@@ -86,3 +92,47 @@ def label_to_index(labels):
     sorted_tuples = sorted(counter.items(), key=lambda x: x[1], reverse=True)
     label_list = [x[0] for x in sorted_tuples]
     return [label_list.index(x) for x in labels]
+
+
+def reporthook(count, block_size, total_size):
+    global start_time
+    if count == 0:
+        start_time = time.time()
+        return
+    duration = time.time() - start_time
+    progress_size = int(count * block_size)
+    speed = int(progress_size / (1024 * duration))
+    percent = int(count * block_size * 100 / total_size)
+    sys.stdout.write("\r...%d%%, %d MB, %d KB/s, %d seconds passed" %
+                    (percent, progress_size / (1024 * 1024), speed, duration))
+    sys.stdout.flush()
+
+
+def read_json_file(data_path):
+    with open(data_path, 'r', encoding='utf-8') as reader:
+        data = json.load(reader)
+    return data
+
+
+def split_sent(examples, eoq='[unused2]', tokenize=True):
+    new_examples = []
+    for e in examples:
+        if tokenize:
+            e = f' {eoq} '.join(sent_tokenize(e))
+        else:
+            e = e.replace('[SEP]', eoq)
+        new_examples.append(e)
+    return new_examples
+
+
+class DictDataset(Dataset):
+    def __init__(self, inputs):
+        super().__init__()
+        assert all(list(inputs.values())[0].size(0) == v.size(0) for v in inputs.values()), "Size mismatch between tensors"
+        self.inputs = inputs
+
+    def __getitem__(self, index):
+        return {k: v[index] for k, v in self.inputs.items()}
+
+    def __len__(self):
+        return list(self.inputs.values())[0].size(0)

@@ -61,8 +61,6 @@ class MetricCalculator(object):
 
         y_true = ctx.get("{}_y_true".format(ctx.cur_data_split))
         y_prob = ctx.get("{}_y_prob".format(ctx.cur_data_split))
-        if len(y_true) == 0 or len(y_prob) == 0:
-            return y_true, y_prob, []
 
         if torch is not None and isinstance(y_true, torch.Tensor):
             y_true = y_true.detach().cpu().numpy()
@@ -72,9 +70,9 @@ class MetricCalculator(object):
         if y_true.ndim == 1:
             y_true = np.expand_dims(y_true, axis=-1)
         if y_prob.ndim == 2:
-            y_prob = np.expand_dims(y_prob, axis=-1)
+            y_prob = np.expand_dims(y_prob, axis=1)
 
-        y_pred = np.argmax(y_prob, axis=1)
+        y_pred = np.argmax(y_prob, axis=-1)
 
         # check shape and type
         if not isinstance(y_true, np.ndarray):

@@ -21,13 +21,11 @@ class FedRunner(object):
     """
     def __init__(self,
                  data,
-                 tokenizer,
                  server_class=Server,
                  client_class=Client,
                  config=None,
                  config_client=None):
         self.data = data
-        self.tokenizer = tokenizer
         self.server_class = server_class
         self.client_class = client_class
         self.cfg = config
@@ -230,7 +228,6 @@ class FedRunner(object):
                 server_id=self.server_id,
                 config=client_specific_config,
                 data=client_data,
-                tokenizer=self.tokenizer,
                 model=client_model or get_model(
                     self.cfg.model, client_data, backend=self.cfg.backend),
                 device=self.gpu_manager.auto_choice(),

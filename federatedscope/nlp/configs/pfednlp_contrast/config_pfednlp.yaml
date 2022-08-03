@@ -1,0 +1,63 @@
+use_gpu: True
+device: 0
+seed: 12345
+outdir: exp/pfednlp/st_im_ag_sq_ne_cn/topk_3/out_0.0/
+federate:
+  mode: standalone
+  method: pfednlp
+  local_update_steps: 1
+  batch_or_epoch: epoch
+  total_round_num: 100
+  client_num: 6
+  save_to: ckpt/
+data:
+  type: pfednlp_data
+  dir:
+    imdb: /mnt/dongchenhe.dch/datasets/imdb/
+    agnews: /mnt/dongchenhe.dch/datasets/agnews/
+    squad: /mnt/dongchenhe.dch/datasets/squad2.0/
+    newsqa: /mnt/dongchenhe.dch/datasets/newsqa/
+    cnndm: /mnt/dongchenhe.dch/datasets/cnndm/
+  max_seq_len:
+    imdb: 128
+    agnews: 128
+    squad: 384
+    newsqa: 384
+    cnndm: 384
+  max_query_len: 128
+  trunc_stride: 128
+  max_tgt_len: 128
+  all_batch_size:
+    imdb: 32
+    agnews: 32
+    squad: 32
+    newsqa: 32
+    cnndm: 16
+  num_workers: 0
+  cache_dir: cache
+aggregator:
+  num_agg_topk: 3
+  inside_weight: 1.0
+  outside_weight: 0.0
+model:
+  type: pfednlp_model
+  bert_type: huawei-noah/TinyBERT_General_4L_312D
+  num_dec_layers: 2
+  num_labels:
+    imdb: 2
+    agnews: 4
+    squad: 2
+    newsqa: 2
+personalization:
+  local_param: ['classifier', 'decoder', 'generator']
+trainer:
+  type: pfednlp_trainer
+  disp_freq: 50
+  val_freq: 100000000  # eval freq across batches
+eval:
+  split: ['test']
+  report: ['raw']
+  best_res_update_round_wise_key: test_loss
+  freq: 100000000  # eval freq across rounds
+test:
+  temp_dir: temp

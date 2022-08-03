@@ -497,9 +497,12 @@ def load_external_data(config=None):
     return data_local_dict, modified_config
 
 
-def get_data(config, **kwargs):
+def get_data(config, client_config=None):
     for func in register.data_dict.values():
-        data_and_config = func(config, **kwargs)
+        try:
+            data_and_config = func(config, client_config)
+        except TypeError:
+            data_and_config = func(config)
         if data_and_config is not None:
             return data_and_config
     if config.data.type.lower() == 'toy':

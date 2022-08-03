@@ -3,3 +3,4 @@ from __future__ import print_function
 from __future__ import division
 
 from federatedscope.nlp.loss.character_loss import *
+from federatedscope.nlp.loss.fednlp_loss import *

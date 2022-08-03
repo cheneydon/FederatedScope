@@ -2,6 +2,7 @@
 """ Translator Class and builder """
 from __future__ import print_function
 import codecs
+import os
 import os.path as osp
 import torch
 from tqdm import tqdm
@@ -92,9 +93,10 @@ class Translator(object):
     def from_batch(self, translation_batch):
         batch = translation_batch["batch"]
         assert (len(translation_batch["gold_score"]) == len(translation_batch["predictions"]))
-        batch_size = len(batch[0])
-        src, segs, mask_src, tgt = batch
 
+        src = batch['token_ids']
+        tgt = batch['labels']
+        batch_size = len(src)
         preds, pred_score, gold_score =  \
             translation_batch["predictions"], \
             translation_batch["scores"], \
@@ -111,18 +113,24 @@ class Translator(object):
         return translations
 
     def translate(self,
-                  data_iter, step,
-                  attn_debug=False):
+                  data_iter,
+                  step,
+                  client_id):
 
         self.model.eval()
-        gold_path = osp.join(self.args.result_path, '%d.gold' % step)
-        can_path = osp.join(self.args.result_path, '%d.candidate' % step)
-        self.gold_out_file = codecs.open(gold_path, 'w', 'utf-8')
+        pred_dir = osp.join(self.args.result_path, 'pred')
+        src_dir = osp.join(self.args.result_path, 'src')
+        tgt_dir = osp.join(self.args.result_path, 'tgt')
+        os.makedirs(pred_dir, exist_ok=True)
+        os.makedirs(src_dir, exist_ok=True)
+        os.makedirs(tgt_dir, exist_ok=True)
+
+        can_path = osp.join(pred_dir, '%d.txt' % client_id)
+        src_path = osp.join(src_dir, '%d.txt' % client_id)
+        gold_path = osp.join(tgt_dir, '%d.txt' % client_id)
         self.can_out_file = codecs.open(can_path, 'w', 'utf-8')
+        self.src_out_file = codecs.open(src_path, 'w', 'utf-8')
         self.gold_out_file = codecs.open(gold_path, 'w', 'utf-8')
-        self.can_out_file = codecs.open(can_path, 'w', 'utf-8')
-        raw_src_path = osp.join(self.args.result_path, '%d.raw_src' % step)
-        self.src_out_file = codecs.open(raw_src_path, 'w', 'utf-8')
 
         def _remove_special_tokens(sent):
             return sent.replace('[CLS]', '').replace('[SEP]', '').replace('[PAD]', '').\
@@ -218,11 +226,13 @@ class Translator(object):
         # src = batch.src
         # segs = batch.segs
         # mask_src = batch.mask_src
-        device = self.model.bert.device
-        batch_size = len(batch[0])
-        src, segs, mask_src, tgt = [_.to(self.model.bert.device) for _ in batch]
+        device = self.model.encoder.device
+        src = batch['token_ids'].to(device)
+        segs = batch['token_type_ids'].to(device)
+        mask_src = batch['attention_mask'].to(device)
+        batch_size = len(src)
 
-        src_features = self.model.bert(src, segs, mask_src).last_hidden_state
+        src_features = self.model.encoder.bert(src, segs, mask_src).last_hidden_state
         dec_states = self.model.decoder.init_decoder_state(src, src_features, with_cache=True)
 
         # Tile states and memory beam_size times.

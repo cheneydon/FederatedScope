@@ -1,0 +1,71 @@
+use_gpu: True
+device: 1
+seed: 12345
+outdir: exp/pretrain/pfednlp/st_im_ag_sq_ne_cn/group_2/
+federate:
+  mode: standalone
+  method: pfednlp
+  local_update_steps: 1
+  batch_or_epoch: epoch
+  total_round_num: 25
+  client_num: 6
+  save_to: ckpt/
+data:
+  type: pfednlp_data
+  task: pretrain
+  dir:
+    imdb: /mnt/dongchenhe.dch/datasets/imdb/
+    agnews: /mnt/dongchenhe.dch/datasets/agnews/
+    squad: /mnt/dongchenhe.dch/datasets/squad2.0/
+    newsqa: /mnt/dongchenhe.dch/datasets/newsqa/
+    cnndm: /mnt/dongchenhe.dch/datasets/cnndm/
+  max_pretrain_seq_len: 384
+  max_tgt_len: 128
+  batch_size: 8
+  pretrain_tasks: ['mlm', 'denoise']
+  num_workers: 0
+  cache_dir: cache
+aggregator:
+  num_agg_groups: 2
+  inside_weight: 1.0
+  outside_weight: 0.0
+optimizer:
+  mlm:
+    type: AdamW
+    lr_enc: 3e-5
+    lr_dec: 3e-2
+    weight_decay: 0.01
+    grad_clip: 1.0
+  denoise:
+    type: AdamW
+    lr_enc: 0.002
+    lr_dec: 0.2
+    weight_decay: 0.0
+    grad_clip: 0.0
+scheduler:
+  mlm:
+    type: step
+    warmup_ratio_enc: 0.1
+    warmup_ratio_dec: 0.05
+  denoise:
+    type: noam
+    warmup_ratio_enc: 0.4
+    warmup_ratio_dec: 0.2
+model:
+  type: pfednlp_model
+  bert_type: huawei-noah/TinyBERT_General_4L_312D
+  num_dec_layers: 2
+trainer:
+  type: pfednlp_trainer
+  train_steps: 500
+  grad_accum_count: 8
+  disp_freq: 50
+  val_freq: 100000000  # eval freq across batches
+eval:
+  metrics: ['acc']
+  split: ['test']
+  report: ['raw']
+  best_res_update_round_wise_key: test_loss
+  freq: 100000000  # eval freq across rounds
+test:
+  temp_dir: temp

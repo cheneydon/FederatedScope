@@ -11,17 +11,13 @@ def wrap_regularized_optimizer(base_optimizer, regular_weight):
         """
         Regularization-based optimizer wrapper
         """
-        def __init__(self, base_optimizer, regular_weight, task=None):
+        def __init__(self, base_optimizer, regular_weight):
             # inherit all the attributes of base optimizer
             self.__dict__.update(base_optimizer.__dict__)
 
-            self.task = task
             # attributes used in the wrapper
             self.optimizer = base_optimizer  # internal torch optimizer
-            if self.task == 'cnndm':
-                self.param_groups = self.optimizer.optimizer.param_groups
-            else:
-                self.param_groups = self.optimizer.param_groups  # link the para of internal optimizer with the wrapper
+            self.param_groups = self.optimizer.param_groups  # link the para of internal optimizer with the wrapper
             self.regular_weight = regular_weight
             self.compared_para_groups = None
 
@@ -57,9 +53,4 @@ def wrap_regularized_optimizer(base_optimizer, regular_weight):
             self.regularize_by_para_diff()  # key action
             self.optimizer.step()
 
-            if self.task == 'cnndm':
-                self.learning_rate = self.optimizer.learning_rate
-
-    if isinstance(internal_base_optimizer, list):
-        return [ParaRegularOptimizer(opt, regular_weight, 'cnndm') for opt in internal_base_optimizer]
     return ParaRegularOptimizer(internal_base_optimizer, regular_weight)

@@ -2,8 +2,12 @@ import math
 import collections
 import string
 import re
+import logging
 from tqdm import tqdm
 from transformers import BasicTokenizer
+from federatedscope.register import register_metric
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_answer(s):
@@ -436,8 +440,30 @@ def compute_squad_metrics(examples, encoded_inputs, results, n_best_size, max_an
                           null_score_diff_threshold=None, return_text=False):
     predicted_answer_texts = create_squad_answer_texts(
         examples, encoded_inputs, results, n_best_size, max_answer_len, null_score_diff_threshold)
-    metrics = squad_evaluate(examples, predicted_answer_texts)
+    raw_metrics = squad_evaluate(examples, predicted_answer_texts)
+    metrics = {k: v for k, v in raw_metrics.items() if k in ('exact', 'f1', 'exact_and_f1')}
 
     if return_text:
         return predicted_answer_texts
     return metrics
+
+
+def load_squad_metrics(ctx, **kwargs):
+    examples = ctx.get('{}_examples'.format(ctx.cur_data_split))
+    encoded_inputs = ctx.get('{}_encoded'.format(ctx.cur_data_split))
+    results = ctx.get('{}_squad_results'.format(ctx.cur_data_split))
+    n_best_size = ctx.cfg.eval.n_best_size
+    max_answer_len = ctx.cfg.eval.max_answer_len
+    null_score_diff_threshold = ctx.cfg.eval.null_score_diff_threshold
+
+    metrics = compute_squad_metrics(
+        examples, encoded_inputs, results, n_best_size, max_answer_len, null_score_diff_threshold)
+    return metrics
+
+
+def call_squad_metric(types):
+    if 'squad' in types:
+        return 'squad', load_squad_metrics
+
+
+register_metric('squad', call_squad_metric)

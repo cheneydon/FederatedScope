@@ -34,10 +34,13 @@ def main():
                 continue
             if line.startswith('{'):
                 line = line.replace("\'", "\"")
-                line = json.loads(s=line)
+                try:
+                    line = json.loads(s=line)
+                except:
+                    continue
                 if line['Round'] == 'Final' and line['Role'] == 'Server #':
-                    res = line['Results_raw']
                     if 'Results_raw' in line.keys():
+                        res = line['Results_raw']
                         if 'server_global_eval' in res.keys():
                             result_list_global.append(res['server_global_eval'])
                         if 'client_summarized_weighted_avg' in res.keys():
@@ -51,15 +54,16 @@ def main():
     if len(result_list_wavg):
         print('\tResults_weighted_avg')
         for key, v in merge_local_results(result_list_wavg).items():
-            print("\t{}, {:.4f}, {:.4f}".format(key, np.mean(v), np.std(v)))
-    if len(result_list_avg):
-        print('\tResults_avg')
-        for key, v in merge_local_results(result_list_avg).items():
-            print("\t{}, {:.4f}, {:.4f}".format(key, np.mean(v), np.std(v)))
-    if len(result_list_global):
-        print('\tserver_global_eval')
-        for key, v in merge_local_results(result_list_global).items():
-            print("\t{}, {:.4f}, {:.4f}".format(key, np.mean(v), np.std(v)))
+            if key == "test_acc":
+                print("\t{}, {:.4f}, {:.4f}".format(key, np.mean(v), np.std(v)))
+    # if len(result_list_avg):
+    #     print('\tResults_avg')
+    #     for key, v in merge_local_results(result_list_avg).items():
+    #         print("\t{}, {:.4f}, {:.4f}".format(key, np.mean(v), np.std(v)))
+    # if len(result_list_global):
+    #     print('\tserver_global_eval')
+    #     for key, v in merge_local_results(result_list_global).items():
+    #         print("\t{}, {:.4f}, {:.4f}".format(key, np.mean(v), np.std(v)))
 
 
 if __name__ == "__main__":

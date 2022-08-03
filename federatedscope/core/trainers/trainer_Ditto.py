@@ -2,10 +2,9 @@ import copy
 
 import torch
 
-# from federatedscope.core.auxiliaries.optimizer_builder import get_optimizer
 from federatedscope.core.trainers.trainer import GeneralTorchTrainer
 from federatedscope.core.optimizer import wrap_regularized_optimizer
-from federatedscope.contrib.auxiliaries.optimizer_builder import get_optimizer
+from federatedscope.core.auxiliaries.optimizer_builder import get_optimizer
 from federatedscope.core.auxiliaries.scheduler_builder import get_scheduler
 from typing import Type
 
@@ -75,7 +74,7 @@ def init_Ditto_ctx(base_trainer):
     #     cfg.personalization.lr,
     #     weight_decay=cfg.optimizer.weight_decay)
 
-    if cfg.data.type == 'cnndm':
+    if cfg.data.task == 'cnndm':
         ctx.optimizer_for_global_model = get_optimizer(
             cfg.optimizer.type,
             ctx.global_model,
@@ -148,10 +147,10 @@ def hook_on_fit_start_set_regularized_para(ctx):
 
     if isinstance(ctx.optimizer_for_local_model, list):
         compared_global_model_para_enc = [{
-            "params": [p for n, p in list(ctx.global_model.named_parameters()) if n.startswith('bert')]
+            "params": [p for n, p in list(ctx.global_model.named_parameters()) if n.startswith('encoder')]
         }]
         compared_global_model_para_dec = [{
-            "params": [p for n, p in list(ctx.global_model.named_parameters()) if not n.startswith('bert')]
+            "params": [p for n, p in list(ctx.global_model.named_parameters()) if not n.startswith('encoder')]
         }]
         ctx.optimizer_for_local_model[0].set_compared_para_group(compared_global_model_para_enc)
         ctx.optimizer_for_local_model[1].set_compared_para_group(compared_global_model_para_dec)

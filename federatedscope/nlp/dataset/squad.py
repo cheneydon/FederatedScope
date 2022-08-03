@@ -1,13 +1,11 @@
 import os
 import os.path as osp
-import numpy as np
 import torch
-import json
 import logging
-from tqdm import tqdm
-from torch.utils.data.dataset import TensorDataset
+from federatedscope.nlp.dataset.utils import read_json_file, split_sent, DictDataset, NUM_DEBUG
 
 logger = logging.getLogger(__name__)
+task = 'squad'
 
 
 class SquadExample(object):
@@ -128,199 +126,206 @@ def encode(tokenizer, text_a, text_b, max_seq_len, max_query_len, added_trunc_si
     return SquadEncodedInput(token_ids, token_type_ids, attention_mask, overflow_token_ids)
 
 
-def create_squad_examples(root, split):
-    with open(osp.join(root, split + '.json'), 'r', encoding='utf-8') as reader:
-        data = json.load(reader)['data']
+def create_squad_examples(root, split, debug=False):
+    data = read_json_file(osp.join(root, split + '.json'))
+    if debug:
+        data = data[:NUM_DEBUG]
 
     examples = []
-    for i, entry in tqdm(enumerate(data), total=len(data)):
-        for paragraph in entry['paragraphs']:
-            context = paragraph['context']
-            for qa in paragraph['qas']:
-                qa_id = qa['id']
-                question = qa['question']
-                start_char_pos = None
-                train_answer = None
-                val_answer = []
+    for para in data:
+        context = para['context']
+        qa = para['qa']
+        qa_id = qa['id']
+        question = qa['question']
+        start_char_pos = None
+        train_answer = None
+        val_answer = []
 
-                if 'is_impossible' in qa:
-                    is_impossible = qa['is_impossible']
-                else:
-                    is_impossible = False
-                if not is_impossible:
-                    if split == 'train':
-                        train_answer = qa['answers'][0]['text']
-                        start_char_pos = qa['answers'][0]['answer_start']
-                    else:
-                        val_answer = qa['answers']
+        is_impossible = qa['is_impossible'] if 'is_impossible' in qa else False
+        if not is_impossible:
+            if split == 'train':
+                train_answer = qa['answers'][0]['text']
+                start_char_pos = qa['answers'][0]['answer_start']
+            else:
+                val_answer = qa['answers']
 
-                start_pos, end_pos, context_tokens = get_char_to_word_positions(
-                    context, train_answer, start_char_pos, is_impossible)
-                examples.append(SquadExample(qa_id, question, context, train_answer, val_answer,
-                                             start_pos, end_pos, context_tokens, is_impossible))
-
-    if split == 'train':
-        num_train_samples = int(0.9 * len(examples))
-        return examples[:num_train_samples], examples[num_train_samples:]
-    elif split == 'dev':
-        return examples
+        start_pos, end_pos, context_tokens = get_char_to_word_positions(
+            context, train_answer, start_char_pos, is_impossible)
+        examples.append(SquadExample(qa_id, question, context, train_answer, val_answer,
+                                     start_pos, end_pos, context_tokens, is_impossible))
+    return examples
 
 
-def create_squad_dataset(root, split, tokenizer, max_seq_len, max_query_len, trunc_stride, model_type, cache_dir=''):
-    logger.info('Preprocessing {} {} dataset'.format('squad', split))
-    cache_file = osp.join(cache_dir, 'squad', '_'.join(['squad', split, str(max_seq_len), str(max_query_len),
-                                                        str(trunc_stride), model_type]) + '.pt')
+def create_squad_dataset(root, split, tokenizer, max_seq_len, max_query_len, trunc_stride, model_type, cache_dir='',
+                         client_id=None, pretrain=False, debug=False, **kwargs):
+    if pretrain:
+        return create_squad_pretrain_dataset(root, split, tokenizer, max_seq_len, model_type, cache_dir, client_id, debug)
+
+    if client_id is None:
+        save_dir = osp.join(cache_dir, 'finetune', task)
+        cache_file = osp.join(save_dir, '_'.join([task, split, str(max_seq_len), str(max_query_len),
+                                                  str(trunc_stride), model_type.split('/')[-1]]) + '.pt')
+    else:
+        save_dir = osp.join(cache_dir, 'finetune', str(client_id))
+        cache_file = osp.join(save_dir, split + '.pt')
+
     if osp.exists(cache_file):
         logger.info('Loading cache file from \'{}\''.format(cache_file))
         cache_data = torch.load(cache_file)
         examples = cache_data['examples']
         encoded_inputs = cache_data['encoded_inputs']
     else:
-        examples = create_squad_examples(root, split)
-        encoded_inputs = None
+        examples = create_squad_examples(root, split, debug)
+        unique_id = 1000000000
+        encoded_inputs = []
+        for example_idx, example in enumerate(examples):
+            if split == 'train' and not example.is_impossible:
+                start_pos = example.start_position
+                end_pos = example.end_position
 
-    def _create_dataset(examples_, encoded_inputs_=None):
-        if encoded_inputs_ is None:
-            unique_id = 1000000000
-            encoded_inputs_ = []
-            for example_idx, example in tqdm(enumerate(examples_), total=len(examples_)):
-                if split == 'train' and not example.is_impossible:
-                    start_pos = example.start_position
-                    end_pos = example.end_position
+                actual_answer = ' '.join(example.context_tokens[start_pos:(end_pos + 1)])
+                cleaned_answer = ' '.join(example.train_answer.strip().split())
+                if actual_answer.find(cleaned_answer) == -1:
+                    logger.info('Could not find answer: {} vs. {}'.format(actual_answer, cleaned_answer))
+                    continue
 
-                    actual_answer = ' '.join(example.context_tokens[start_pos:(end_pos + 1)])
-                    cleaned_answer = ' '.join(example.train_answer.strip().split())
-                    if actual_answer.find(cleaned_answer) == -1:
-                        logger.info('Could not find answer: {} vs. {}'.format(actual_answer, cleaned_answer))
-                        continue
+            tok_to_subtok_idx = []
+            subtok_to_tok_idx = []
+            context_subtokens = []
+            for i, token in enumerate(example.context_tokens):
+                tok_to_subtok_idx.append(len(context_subtokens))
+                subtokens = tokenizer.tokenize(token)
+                for subtoken in subtokens:
+                    subtok_to_tok_idx.append(i)
+                    context_subtokens.append(subtoken)
 
-                tok_to_subtok_idx = []
-                subtok_to_tok_idx = []
-                context_subtokens = []
-                for i, token in enumerate(example.context_tokens):
-                    tok_to_subtok_idx.append(len(context_subtokens))
-                    subtokens = tokenizer.tokenize(token)
-                    for subtoken in subtokens:
-                        subtok_to_tok_idx.append(i)
-                        context_subtokens.append(subtoken)
+            if split == 'train' and not example.is_impossible:
+                subtoken_start_pos = tok_to_subtok_idx[example.start_position]
+                if example.end_position < len(example.context_tokens) - 1:
+                    subtoken_end_pos = tok_to_subtok_idx[example.end_position + 1] - 1
+                else:
+                    subtoken_end_pos = len(context_subtokens) - 1
+                subtoken_start_pos, subtoken_end_pos = refine_subtoken_position(
+                    context_subtokens, subtoken_start_pos, subtoken_end_pos, tokenizer, example.train_answer)
 
-                if split == 'train' and not example.is_impossible:
-                    subtoken_start_pos = tok_to_subtok_idx[example.start_position]
-                    if example.end_position < len(example.context_tokens) - 1:
-                        subtoken_end_pos = tok_to_subtok_idx[example.end_position + 1] - 1
+            truncated_context = context_subtokens
+            len_question = min(len(tokenizer.tokenize(example.question)), max_query_len - 2)
+            added_trunc_size = max_seq_len - trunc_stride - len_question - 3
+
+            spans = []
+            while len(spans) * trunc_stride < len(context_subtokens):
+                text_a = example.question
+                text_b = truncated_context
+                encoded_input = encode(tokenizer, text_a, text_b, max_seq_len, max_query_len, added_trunc_size)
+
+                context_start_pos = len(spans) * trunc_stride
+                context_len = min(len(context_subtokens) - context_start_pos, max_seq_len - len_question - 3)
+                context_end_pos = context_start_pos + context_len - 1
+
+                if tokenizer.pad_token_id in encoded_input.token_ids:
+                    non_padded_ids = encoded_input.token_ids[:encoded_input.token_ids.index(tokenizer.pad_token_id)]
+                else:
+                    non_padded_ids = encoded_input.token_ids
+                tokens = tokenizer.convert_ids_to_tokens(non_padded_ids)
+
+                context_subtok_to_tok_idx = {}
+                for i in range(context_len):
+                    context_idx = len_question + i + 2
+                    context_subtok_to_tok_idx[context_idx] = subtok_to_tok_idx[context_start_pos + i]
+
+                start_pos, end_pos = 0, 0
+                span_is_impossible = example.is_impossible
+                if split == 'train' and not span_is_impossible:
+                    # For training, if our document chunk does not contain an annotation
+                    # we throw it out, since there is nothing to predict.
+                    if subtoken_start_pos >= context_start_pos and subtoken_end_pos <= context_end_pos:
+                        context_offset = len_question + 2
+                        start_pos = subtoken_start_pos - context_start_pos + context_offset
+                        end_pos = subtoken_end_pos - context_start_pos + context_offset
                     else:
-                        subtoken_end_pos = len(context_subtokens) - 1
-                    subtoken_start_pos, subtoken_end_pos = refine_subtoken_position(
-                        context_subtokens, subtoken_start_pos, subtoken_end_pos, tokenizer, example.train_answer)
+                        start_pos = 0
+                        end_pos = 0
+                        span_is_impossible = True
 
-                truncated_context = context_subtokens
-                len_question = min(len(tokenizer.tokenize(example.question)), max_query_len - 2)
-                added_trunc_size = max_seq_len - trunc_stride - len_question - 3
+                encoded_input.start_position = start_pos
+                encoded_input.end_position = end_pos
+                encoded_input.is_impossible = span_is_impossible
 
-                spans = []
-                while len(spans) * trunc_stride < len(context_subtokens):
-                    text_a = example.question
-                    text_b = truncated_context
-                    encoded_input = encode(tokenizer, text_a, text_b, max_seq_len, max_query_len, added_trunc_size)
+                # For computing metrics
+                encoded_input.example_index = example_idx
+                encoded_input.context_start_position = context_start_pos
+                encoded_input.context_len = context_len
+                encoded_input.tokens = tokens
+                encoded_input.context_subtok_to_tok_idx = context_subtok_to_tok_idx
+                encoded_input.is_max_context_token = {}
+                encoded_input.unique_id = unique_id
+                spans.append(encoded_input)
+                unique_id += 1
 
-                    context_start_pos = len(spans) * trunc_stride
-                    context_len = min(len(context_subtokens) - context_start_pos, max_seq_len - len_question - 3)
-                    context_end_pos = context_start_pos + context_len - 1
+                if encoded_input.overflow_token_ids is None:
+                    break
+                truncated_context = encoded_input.overflow_token_ids
 
-                    if tokenizer.pad_token_id in encoded_input.token_ids:
-                        non_padded_ids = encoded_input.token_ids[:encoded_input.token_ids.index(tokenizer.pad_token_id)]
-                    else:
-                        non_padded_ids = encoded_input.token_ids
-                    tokens = tokenizer.convert_ids_to_tokens(non_padded_ids)
+            for span_idx in range(len(spans)):
+                for context_idx in range(spans[span_idx].context_len):
+                    is_max_context_token = check_max_context_token(spans, span_idx,
+                                                                   span_idx * trunc_stride + context_idx)
+                    idx = len_question + context_idx + 2
+                    spans[span_idx].is_max_context_token[idx] = is_max_context_token
+            encoded_inputs.extend(spans)
 
-                    context_subtok_to_tok_idx = {}
-                    for i in range(context_len):
-                        context_idx = len_question + i + 2
-                        context_subtok_to_tok_idx[context_idx] = subtok_to_tok_idx[context_start_pos + i]
+        if cache_dir:
+            logger.info('Saving cache file to \'{}\''.format(cache_file))
+            os.makedirs(save_dir, exist_ok=True)
+            torch.save({'examples': examples,
+                        'encoded_inputs': encoded_inputs}, cache_file)
 
-                    # p_mask: mask with 1 for token than cannot be in the answer (0 for token which can be in an answer)
-                    cls_index = encoded_input.token_ids.index(tokenizer.cls_token_id)
-                    p_mask = np.array(encoded_input.token_type_ids)
-                    p_mask = np.minimum(p_mask, 1)
-                    p_mask[np.where(np.array(encoded_input.token_ids) == tokenizer.sep_token_id)[0]] = 1
-                    p_mask[cls_index] = 0
+    token_ids = torch.LongTensor([inp.token_ids for inp in encoded_inputs])
+    token_type_ids = torch.LongTensor([inp.token_type_ids for inp in encoded_inputs])
+    attention_mask = torch.LongTensor([inp.attention_mask for inp in encoded_inputs])
+    start_positions = torch.LongTensor([inp.start_position for inp in encoded_inputs])
+    end_positions = torch.LongTensor([inp.end_position for inp in encoded_inputs])
 
-                    start_pos, end_pos = 0, 0
-                    span_is_impossible = example.is_impossible
-                    if split == 'train' and not span_is_impossible:
-                        # For training, if our document chunk does not contain an annotation
-                        # we throw it out, since there is nothing to predict.
-                        if subtoken_start_pos >= context_start_pos and subtoken_end_pos <= context_end_pos:
-                            context_offset = len_question + 2
-                            start_pos = subtoken_start_pos - context_start_pos + context_offset
-                            end_pos = subtoken_end_pos - context_start_pos + context_offset
-                        else:
-                            start_pos = cls_index
-                            end_pos = cls_index
-                            span_is_impossible = True
+    example_indices = torch.arange(token_ids.size(0), dtype=torch.long)
+    dataset = DictDataset({'token_ids': token_ids,
+                           'token_type_ids': token_type_ids,
+                           'attention_mask': attention_mask,
+                           'start_positions': start_positions,
+                           'end_positions': end_positions,
+                           'example_indices': example_indices})
+    return dataset, encoded_inputs, examples
 
-                    encoded_input.start_position = start_pos
-                    encoded_input.end_position = end_pos
-                    encoded_input.cls_index = cls_index
-                    encoded_input.p_mask = p_mask.tolist()
-                    encoded_input.is_impossible = span_is_impossible
 
-                    # For computing metrics
-                    encoded_input.example_index = example_idx
-                    encoded_input.context_start_position = context_start_pos
-                    encoded_input.context_len = context_len
-                    encoded_input.tokens = tokens
-                    encoded_input.context_subtok_to_tok_idx = context_subtok_to_tok_idx
-                    encoded_input.is_max_context_token = {}
-                    encoded_input.unique_id = unique_id
-                    spans.append(encoded_input)
-                    unique_id += 1
+def create_squad_pretrain_dataset(root, split, tokenizer, max_seq_len, model_type, cache_dir='', client_id=None, debug=False):
+    if client_id is None:
+        save_dir = osp.join(cache_dir, 'pretrain', task)
+        cache_file = osp.join(save_dir, '_'.join([task, split, str(max_seq_len), model_type.split('/')[-1]]) + '.pt')
+    else:
+        save_dir = osp.join(cache_dir, 'pretrain', str(client_id))
+        cache_file = osp.join(save_dir, split + '.pt')
 
-                    if encoded_input.overflow_token_ids is None:
-                        break
-                    truncated_context = encoded_input.overflow_token_ids
+    if osp.exists(cache_file):
+        logger.info('Loading cache file from \'{}\''.format(cache_file))
+        cache_data = torch.load(cache_file)
+        examples = cache_data['examples']
+        encoded_inputs = cache_data['encoded_inputs']
+    else:
+        examples = create_squad_examples(root, split, debug)
+        texts = split_sent([e.context for e in examples], eoq=tokenizer.eoq_token)
+        encoded_inputs = tokenizer(texts, padding='max_length', truncation=True, max_length=max_seq_len, return_tensors='pt')
+        num_non_padding = (encoded_inputs.input_ids != tokenizer.pad_token_id).sum(dim=-1)
+        for i, pad_idx in enumerate(num_non_padding):
+            encoded_inputs.input_ids[i, 0] = tokenizer.bos_token_id
+            encoded_inputs.input_ids[i, pad_idx - 1] = tokenizer.eos_token_id
 
-                for span_idx in range(len(spans)):
-                    for context_idx in range(spans[span_idx].context_len):
-                        is_max_context_token = check_max_context_token(spans, span_idx, span_idx * trunc_stride + context_idx)
-                        idx = len_question + context_idx + 2
-                        spans[span_idx].is_max_context_token[idx] = is_max_context_token
-                encoded_inputs_.extend(spans)
+        if cache_dir:
+            logger.info('Saving cache file to \'{}\''.format(cache_file))
+            os.makedirs(save_dir, exist_ok=True)
+            torch.save({'examples': examples,
+                        'encoded_inputs': encoded_inputs}, cache_file)
 
-        token_ids = torch.LongTensor([inp.token_ids for inp in encoded_inputs_])
-        token_type_ids = torch.LongTensor([inp.token_type_ids for inp in encoded_inputs_])
-        attention_mask = torch.LongTensor([inp.attention_mask for inp in encoded_inputs_])
-        start_positions = torch.LongTensor([inp.start_position for inp in encoded_inputs_])
-        end_positions = torch.LongTensor([inp.end_position for inp in encoded_inputs_])
-
-        example_indices = torch.arange(token_ids.size(0), dtype=torch.long)
-        dataset = TensorDataset(token_ids, token_type_ids, attention_mask, start_positions,
-                                end_positions, example_indices)
-        return dataset, encoded_inputs_, examples_
-
-    if split == 'train':
-        if encoded_inputs is not None:
-            return _create_dataset(examples[0], encoded_inputs[0]), _create_dataset(examples[1], encoded_inputs[1])
-        else:
-            train_dataset, train_encoded, train_examples = _create_dataset(examples[0])
-            val_dataset, val_encoded, val_examples = _create_dataset(examples[1])
-            if cache_dir:
-                logger.info('Saving cache file to \'{}\''.format(cache_file))
-                os.makedirs(osp.join(cache_dir, 'squad'), exist_ok=True)
-                torch.save({'examples': examples,
-                            'encoded_inputs': [train_encoded, val_encoded]}, cache_file)
-
-        return (train_dataset, train_encoded, train_examples), (val_dataset, val_encoded, val_examples)
-
-    elif split == 'dev':
-        if encoded_inputs is not None:
-            return _create_dataset(examples, encoded_inputs)
-        else:
-            test_dataset, test_encoded, test_examples = _create_dataset(examples)
-            if cache_dir:
-                logger.info('Saving cache file to \'{}\''.format(cache_file))
-                os.makedirs(osp.join(cache_dir, 'squad'), exist_ok=True)
-                torch.save({'examples': examples,
-                            'encoded_inputs': test_encoded}, cache_file)
-
-        return test_dataset, test_encoded, test_examples
+    example_indices = torch.arange(encoded_inputs.input_ids.size(0), dtype=torch.long)
+    dataset = DictDataset({'token_ids': encoded_inputs.input_ids,
+                           'attention_mask': encoded_inputs.attention_mask,
+                           'example_indices': example_indices})
+    return dataset, encoded_inputs, examples

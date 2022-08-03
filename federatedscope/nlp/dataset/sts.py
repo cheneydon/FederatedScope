@@ -1,11 +1,11 @@
 import os
 import os.path as osp
-import csv
 import logging
 import torch
-from torch.utils.data.dataset import TensorDataset
+from federatedscope.nlp.dataset.utils import read_json_file, split_sent, DictDataset, NUM_DEBUG
 
 logger = logging.getLogger(__name__)
+task = 'sts'
 
 
 class GlueExample(object):
@@ -15,81 +15,86 @@ class GlueExample(object):
         self.label = label
 
 
-def read_tsv(file_path):
-    with open(file_path, 'r', encoding='utf-8-sig') as f:
-        reader = csv.reader(f, delimiter='\t', quotechar=None)
-        data = []
-        for line in reader:
-            data.append(line)
-        return data
+def create_sts_examples(root, split, debug=False):
+    data = read_json_file(osp.join(root, split + '.json'))
+    if debug:
+        data = data[:NUM_DEBUG]
 
-
-def create_sts_examples(root, split):
-    data_path = osp.join(root, split + '.tsv')
-    text_a_id, text_b_id, label_id = 7, 8, -1
-    data = read_tsv(data_path)
     examples = []
-    for i, line in enumerate(data):
-        if i == 0: continue
-        text_a = line[text_a_id]
-        text_b = line[text_b_id]
-        label = float(line[label_id])
-        examples.append(GlueExample(text_a, text_b, label))
-
-    if split == 'train':
-        num_train_samples = int(0.9 * len(examples))
-        return examples[:num_train_samples], examples[num_train_samples:]
-    elif split == 'dev':
-        return examples
+    for ex in data:
+        examples.append(GlueExample(ex['text_a'], ex['text_b'], ex['label']))
+    return examples
 
 
-def create_sts_dataset(root, split, tokenizer, max_seq_len, model_type, cache_dir=''):
-    logger.info('Preprocessing {} {} dataset'.format('sts', split))
-    cache_file = osp.join(cache_dir, 'sts', '_'.join(['sts', split, str(max_seq_len), model_type]) + '.pt')
+def create_sts_dataset(root, split, tokenizer, max_seq_len, model_type, cache_dir='', client_id=None,
+                       pretrain=False, debug=False, **kwargs):
+    if pretrain:
+        return create_sts_pretrain_dataset(root, split, tokenizer, max_seq_len, model_type, cache_dir, client_id, debug)
+
+    if client_id is None:
+        save_dir = osp.join(cache_dir, 'finetune', task)
+        cache_file = osp.join(save_dir, '_'.join([task, split, str(max_seq_len), model_type.split('/')[-1]]) + '.pt')
+    else:
+        save_dir = osp.join(cache_dir, 'finetune', str(client_id))
+        cache_file = osp.join(save_dir, split + '.pt')
+
     if osp.exists(cache_file):
         logger.info('Loading cache file from \'{}\''.format(cache_file))
         cache_data = torch.load(cache_file)
         examples = cache_data['examples']
         encoded_inputs = cache_data['encoded_inputs']
     else:
-        examples = create_sts_examples(root, split)
-        encoded_inputs = None
+        examples = create_sts_examples(root, split, debug)
+        texts_a = [ex.text_a for ex in examples]
+        texts_b = [ex.text_b for ex in examples]
+        encoded_inputs = tokenizer(texts_a, texts_b, padding='max_length', truncation=True, max_length=max_seq_len,
+                                   return_tensors='pt')
 
-    def _create_dataset(examples_, encoded_inputs_=None):
-        texts_a = [ex.text_a for ex in examples_]
-        texts_b = [ex.text_b for ex in examples_]
-        labels = [ex.label for ex in examples_]
+        if cache_dir:
+            logger.info('Saving cache file to \'{}\''.format(cache_file))
+            os.makedirs(save_dir, exist_ok=True)
+            torch.save({'examples': examples,
+                        'encoded_inputs': encoded_inputs}, cache_file)
 
-        if encoded_inputs_ is None:
-            encoded_inputs_ = tokenizer(texts_a, texts_b, padding=True, truncation=True, max_length=max_seq_len, return_tensors='pt')
+    labels = [ex.label for ex in examples]
+    dataset = DictDataset({'token_ids': encoded_inputs.input_ids,
+                           'token_type_ids': encoded_inputs.token_type_ids,
+                           'attention_mask': encoded_inputs.attention_mask,
+                           'labels': torch.FloatTensor(labels)})
+    return dataset, encoded_inputs, examples
 
-        dataset = TensorDataset(encoded_inputs_.input_ids, encoded_inputs_.token_type_ids,
-                                encoded_inputs_.attention_mask, torch.FloatTensor(labels))
-        return dataset, encoded_inputs_, examples_
 
-    if split == 'train':
-        if encoded_inputs is not None:
-            return _create_dataset(examples[0], encoded_inputs[0]), _create_dataset(examples[1], encoded_inputs[1])
-        else:
-            train_dataset, train_encoded, train_examples = _create_dataset(examples[0])
-            val_dataset, val_encoded, val_examples = _create_dataset(examples[1])
-            if cache_dir:
-                logger.info('Saving cache file to \'{}\''.format(cache_file))
-                os.makedirs(osp.join(cache_dir, 'sts'), exist_ok=True)
-                torch.save({'examples': examples,
-                            'encoded_inputs': [train_encoded, val_encoded]}, cache_file)
+def create_sts_pretrain_dataset(root, split, tokenizer, max_seq_len, model_type, cache_dir='', client_id=None, debug=False):
+    if client_id is None:
+        save_dir = osp.join(cache_dir, 'pretrain', task)
+        cache_file = osp.join(save_dir, '_'.join([task, split, str(max_seq_len), model_type.split('/')[-1]]) + '.pt')
+    else:
+        save_dir = osp.join(cache_dir, 'pretrain', str(client_id))
+        cache_file = osp.join(save_dir, split + '.pt')
 
-        return (train_dataset, train_encoded, train_examples), (val_dataset, val_encoded, val_examples)
+    if osp.exists(cache_file):
+        logger.info('Loading cache file from \'{}\''.format(cache_file))
+        cache_data = torch.load(cache_file)
+        examples = cache_data['examples']
+        encoded_inputs = cache_data['encoded_inputs']
+    else:
+        examples = create_sts_examples(root, split, debug)
+        texts = [' '.join([ex.text_a, ex.text_b]) for ex in examples]
+        texts = split_sent(texts, eoq=tokenizer.eoq_token)
+        encoded_inputs = tokenizer(texts, padding='max_length', truncation=True, max_length=max_seq_len, return_tensors='pt')
+        num_non_padding = (encoded_inputs.input_ids != tokenizer.pad_token_id).sum(dim=-1)
+        for i, pad_idx in enumerate(num_non_padding):
+            encoded_inputs.input_ids[i, 0] = tokenizer.bos_token_id
+            encoded_inputs.input_ids[i, pad_idx - 1] = tokenizer.eos_token_id
 
-    elif split == 'dev':
-        if encoded_inputs is not None:
-            return _create_dataset(examples, encoded_inputs)
-        else:
-            test_dataset, test_encoded, test_examples = _create_dataset(examples)
-            if cache_dir:
-                logger.info('Saving cache file to \'{}\''.format(cache_file))
-                os.makedirs(osp.join(cache_dir, 'sts'), exist_ok=True)
-                torch.save({'examples': examples,
-                            'encoded_inputs': test_encoded}, cache_file)
+        if cache_dir:
+            logger.info('Saving cache file to \'{}\''.format(cache_file))
+            os.makedirs(save_dir, exist_ok=True)
+            torch.save({'examples': examples,
+                        'encoded_inputs': encoded_inputs}, cache_file)
 
-        return test_dataset, test_encoded, test_examples
+    example_indices = torch.arange(encoded_inputs.input_ids.size(0), dtype=torch.long)
+    dataset = DictDataset({'token_ids': encoded_inputs.input_ids,
+                           'attention_mask': encoded_inputs.attention_mask,
+                           'example_indices': example_indices})
+    return dataset, encoded_inputs, examples
