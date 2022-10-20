@@ -3,7 +3,6 @@ import collections
 import string
 import re
 import logging
-from tqdm import tqdm
 from transformers import BasicTokenizer
 from federatedscope.register import register_metric
 
@@ -313,7 +312,7 @@ def create_squad_answer_texts(examples, encoded_inputs, results, n_best_size, ma
         unique_id_to_result[result.unique_id] = result
 
     predicted_answer_texts = collections.OrderedDict()
-    for (example_index, example) in tqdm(enumerate(examples), total=len(examples)):
+    for (example_index, example) in enumerate(examples):
         features = example_index_to_features[example_index]
         prelim_predictions = []
         # keep track of the minimum score of null start+end of position 0
@@ -452,9 +451,9 @@ def load_squad_metrics(ctx, **kwargs):
     examples = ctx.get('{}_examples'.format(ctx.cur_data_split))
     encoded_inputs = ctx.get('{}_encoded'.format(ctx.cur_data_split))
     results = ctx.get('{}_squad_results'.format(ctx.cur_data_split))
-    n_best_size = ctx.cfg.eval.n_best_size
-    max_answer_len = ctx.cfg.eval.max_answer_len
-    null_score_diff_threshold = ctx.cfg.eval.null_score_diff_threshold
+    n_best_size = ctx.cfg.model.n_best_size
+    max_answer_len = ctx.cfg.model.max_answer_len
+    null_score_diff_threshold = ctx.cfg.model.null_score_diff_threshold
 
     metrics = compute_squad_metrics(
         examples, encoded_inputs, results, n_best_size, max_answer_len, null_score_diff_threshold)

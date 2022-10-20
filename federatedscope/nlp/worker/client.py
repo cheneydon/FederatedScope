@@ -31,7 +31,7 @@ class FedNLPClient(Client):
                          *args,
                          **kwargs,)
 
-        self.trainer.update_id(self.ID)
+        self.trainer.update_stat(self.ID)
 
     def callback_funcs_for_model_para(self, message: Message):
         if 'ss' in message.msg_type:
@@ -197,19 +197,16 @@ class PFedNLPClient(FedNLPClient):
                          *args,
                          **kwargs,)
 
-        self.trainer.update_id(self.ID)
-
     def callback_funcs_for_model_para(self, message: Message):
         round, sender, content = message.state, message.sender, message.content
         self.trainer.update(content['model_para'])
         self.trainer.update_task(content['task'])
         self.state = round
         if self.early_stopper.early_stopped:
-            sample_size, model_para_all, model_grads_all, results = 0, self.trainer.get_model_para(), \
-                                                                    self.trainer.get_model_grads(), {}
+            sample_size, model_para_all, model_grads, results = 0, self.trainer.get_model_para(), self.trainer.get_model_grads(), {}
             logger.info(f"Client #{self.ID} has been early stopped, we will skip the local training")
         else:
-            sample_size, model_para_all, model_grads_all, results = self.trainer.train()
+            sample_size, model_para_all, model_grads, results = self.trainer.train()
             logger.info(
                 self._monitor.format_eval_res(results,
                                               rnd=self.state + 1,
@@ -223,7 +220,7 @@ class PFedNLPClient(FedNLPClient):
                     state=self.state,
                     content={'sample_size': sample_size,
                              'model_para': model_para_all,
-                             'model_grads': model_grads_all}))
+                             'model_grads': model_grads}))
 
     def callback_funcs_for_evaluate(self, message: Message):
         sender = message.sender
@@ -291,8 +288,6 @@ class PFedNLPContrastClient(FedNLPClient):
                          *args,
                          **kwargs,)
 
-        self.trainer.update_id(self.ID)
-
     def _copy_contrast_monitor(self, raw_monitor):
         monitor = ContrastiveMonitor()
         for var in vars(monitor):
@@ -304,14 +299,13 @@ class PFedNLPContrastClient(FedNLPClient):
         last_contrast_monitor = self._copy_contrast_monitor(content['contrast_monitor'])
         self.state = round
 
-        if last_contrast_monitor.stat == 0:
-            self.trainer.update_task(content['task'])
-        elif last_contrast_monitor.stat == 2:
+        if last_contrast_monitor.stat == 1:
             self.trainer.update(content['model_para'])
         self.trainer.update_contrast_monitor(last_contrast_monitor)
 
-        sample_size, model_para_all, model_grads_all, contrast_monitor, results = self.trainer.train()
-        if contrast_monitor.stat in {1, 2}:
+        sample_size, model_para_all, model_grads, contrast_monitor, results = self.trainer.train()
+
+        if contrast_monitor.stat == 2:
             self.comm_manager.send(
                 Message(msg_type='model_para',
                         sender=self.ID,
@@ -333,7 +327,7 @@ class PFedNLPContrastClient(FedNLPClient):
                         state=self.state,
                         content={'sample_size': sample_size,
                                  'model_para': model_para_all,
-                                 'model_grads': model_grads_all,
+                                 'model_grads': model_grads,
                                  'contrast_monitor': contrast_monitor}))
 
     def callback_funcs_for_evaluate(self, message: Message):

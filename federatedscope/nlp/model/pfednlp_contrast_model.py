@@ -1,17 +1,19 @@
-import copy
 import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.nn import CrossEntropyLoss
-from transformers.models.bert.modeling_bert import BertForPreTraining
+from transformers.models.bert.modeling_bert import BertLMPredictionHead
+from transformers.models.encoder_decoder import EncoderDecoderModel
 from federatedscope.register import register_model
 from federatedscope.nlp.loss import LabelSmoothingLoss
-from federatedscope.nlp.model.decoder import TransformerDecoder
 
 
 class ModelOutput(object):
-    def __init__(self, loss=None, logits=None, hidden_states=None, example_indices=None):
+    def __init__(self, loss=None, regular_loss=None, contrast_loss=None, logits=None,
+                 hidden_states=None, example_indices=None):
         self.loss = loss
+        self.regular_loss = regular_loss
+        self.contrast_loss = contrast_loss
         self.logits = logits
         self.hidden_states = hidden_states
         self.example_indices = example_indices
@@ -34,46 +36,49 @@ class ContrastiveHead(nn.Module):
 
 # Build your torch or tf model class here
 class PFedNLPContrastModel(nn.Module):
-    def __init__(self, config):  # server config
+    def __init__(self, config):
         super().__init__()
 
-        self.encoder = BertForPreTraining.from_pretrained(config.bert_type)
-        self.hidden_size = self.encoder.config.hidden_size
-        self.dropout_prob = self.encoder.config.hidden_dropout_prob
+        self.model = EncoderDecoderModel.from_encoder_decoder_pretrained(config.model_type, config.model_type)
+        self.lm_head = BertLMPredictionHead(self.model.encoder.config)
 
-        # For NLU
+        self.client_id = None
+        self.task = config.task
+        self.pt_cfg = self.model.encoder.config
+        self.vocab_size = self.pt_cfg.vocab_size
+        self.hidden_size = self.pt_cfg.hidden_size
+        self.dropout_prob = self.pt_cfg.hidden_dropout_prob
         self.dropout = nn.Dropout(self.dropout_prob)
-        self.classifier = nn.ModuleDict()
-        all_tasks = [k for k in config.num_labels.keys() if k != 'cfg_check_funcs']
-        self.all_labels = {k: config.num_labels[k] for k in all_tasks}
-        for t, num_lb in self.all_labels.items():
-            num_lb = config.num_labels[t]
-            if num_lb is not None:
-                self.classifier[t] = nn.Linear(self.hidden_size, num_lb)
 
-        # For NLG
-        self.vocab_size = self.encoder.config.vocab_size
-        self.padding_idx = self.encoder.config.pad_token_id
-        tgt_embeddings = nn.Embedding(self.vocab_size, self.hidden_size, padding_idx=self.padding_idx)
-        tgt_embeddings.weight = copy.deepcopy(self.encoder.bert.embeddings.word_embeddings.weight)
-        self.decoder = TransformerDecoder(
-            num_layers=config.num_dec_layers,
-            d_model=self.hidden_size,
-            heads=self.encoder.config.num_attention_heads,
-            d_ff=self.encoder.config.intermediate_size,
-            dropout=self.dropout_prob,
-            embeddings=tgt_embeddings,
-        )
-        self.generator = nn.Sequential(
-            nn.Linear(self.hidden_size, self.vocab_size),
-            nn.LogSoftmax(dim=-1),
-        )
-        self.generator[0].weight = self.decoder.embeddings.weight
+        self.label_smoothing = config.label_smoothing
+        self.padding_idx = config.pad_token_id
+        self.classifier = nn.Linear(self.hidden_size, config.num_labels) \
+            if config.num_labels is not None else None
+
+        self.contrast_topk = config.contrast_topk
+        self.contrast_temp = config.contrast_temp
+        self.train_contrast = config.train_contrast
         self.contrast_head = ContrastiveHead(input_dim=self.hidden_size,
                                              inner_dim=self.hidden_size,
                                              out_dim=self.hidden_size,
                                              dropout_prob=self.dropout_prob)
-        self._init_params()
+
+        # for eval generation
+        self.model.config.decoder_start_token_id = config.bos_token_id
+        self.model.config.eos_token_id = config.eos_token_id
+        self.model.config.pad_token_id = config.pad_token_id
+        self.model.config.vocab_size = self.pt_cfg.vocab_size
+        self.model.config.max_length = config.max_length
+        self.model.config.min_length = config.min_length
+        self.model.config.no_repeat_ngram_size = config.no_repeat_ngram_size
+        self.model.config.length_penalty = config.length_penalty
+        self.model.config.num_beams = config.num_beams
+
+    def update_client_id(self, client_id):
+        self.client_id = client_id
+
+    def generate(self, **kwargs):
+        return self.model.generate(**kwargs)
 
     def forward(
         self,
@@ -81,232 +86,186 @@ class PFedNLPContrastModel(nn.Module):
         attention_mask=None,
         token_type_ids=None,
         position_ids=None,
-        head_mask=None,
-        inputs_embeds=None,
         start_positions=None,
         end_positions=None,
         labels=None,
-        output_attentions=None,
-        output_hidden_states=None,
         pretrain_task=None,
-        in_contrast_prepare=None,
         contrast_monitor=None,
+        in_contrast_prepare=None,
         example_indices=None,
-        client_id=None,
-        config=None,  # client specific config
     ):
-        # print(example_indices)
-        if in_contrast_prepare:
-            assert pretrain_task == 'denoise'
-            if contrast_monitor.stat == 0:  # return enc_hidden_states
-                self.eval()
-                with torch.no_grad():
-                    example_indices = [k for k in example_indices if k.item() < config.federate.num_contrast]
-                    if len(example_indices) == 0:
-                        return ModelOutput()
+        if in_contrast_prepare:  # return dec_hidden_states & dec_out
+            self.eval()
+            with torch.no_grad():
+                example_indices = torch.stack([k for k in example_indices if k.item() in contrast_monitor.synth_tokens])
+                synth_input_ids = torch.stack([contrast_monitor.synth_tokens[k.item()]
+                                               for k in example_indices]).to(self.model.device)
 
-                    outputs = self.encoder.bert(
-                        input_ids,
-                        attention_mask=attention_mask,
-                        token_type_ids=token_type_ids,
-                        position_ids=position_ids,
-                        head_mask=head_mask,
-                        inputs_embeds=inputs_embeds,
-                        output_attentions=output_attentions,
-                        output_hidden_states=output_hidden_states,
-                    )
-                    return ModelOutput(hidden_states=outputs.last_hidden_state)
+                enc_hidden = torch.stack([contrast_monitor.enc_hidden[k.item()]
+                                          for k in example_indices]).to(self.model.device)
+                outputs = self.model.decoder.bert(
+                    input_ids=synth_input_ids,
+                    encoder_hidden_states=enc_hidden,
+                )
+                logits = self.model.decoder.cls(outputs.last_hidden_state)
+                dec_hidden = self.contrast_head(outputs.last_hidden_state).mean(1)
+                # outputs = self.model(
+                #     input_ids=synth_input_ids,
+                #     decoder_input_ids=synth_input_ids,
+                #     output_hidden_states=True,
+                # )
+                # logits = outputs.logits
+                # dec_hidden = self.contrast_head(outputs.decoder_hidden_states[-1]).mean(1)
 
-            elif contrast_monitor.stat == 1:  # return dec_hidden_states & dec_out
-                self.eval()
-                with torch.no_grad():
-                    example_indices = [k for k in example_indices if k.item() in contrast_monitor.synth_tokens]
-                    if len(example_indices) == 0:
-                        return ModelOutput()
+                return ModelOutput(logits=logits.argmax(-1),
+                                   hidden_states=dec_hidden,
+                                   example_indices=example_indices)
 
-                    example_indices = torch.stack(example_indices)
-                    synth_input_ids = torch.stack([contrast_monitor.synth_tokens[k.item()] for k in example_indices]).to(config.device)
-                    enc_hidden = torch.stack([contrast_monitor.enc_hidden[k.item()] for k in example_indices]).to(config.device)
-
-                    dec_state = self.decoder.init_decoder_state(synth_input_ids, enc_hidden)
-                    dec_outputs, _ = self.decoder(synth_input_ids[:, :-1], enc_hidden, dec_state)
-                    logits = self.generator[0](dec_outputs.view(-1, dec_outputs.size(-1)))
-                    preds = logits.view(-1, dec_outputs.size(1), self.vocab_size).argmax(dim=-1)
-                    dec_hidden = self.contrast_head(dec_outputs).mean(dim=1)
-                    return ModelOutput(logits=preds, hidden_states=dec_hidden, example_indices=example_indices)
-
-        outputs = self.encoder.bert(
-            input_ids,
+        enc_outputs = self.model.encoder(
+            input_ids=input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
             position_ids=position_ids,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
         )
 
-        task = config.data.task
-        if task == 'pretrain':
+        regular_loss, contrast_loss = None, None
+        if self.task == 'pretrain':
             if pretrain_task == 'mlm':
-                logits = self.encoder.cls.predictions(outputs.last_hidden_state)
+                logits = self.lm_head(enc_outputs.last_hidden_state)
                 loss_fct = CrossEntropyLoss()
                 masked_lm_loss = loss_fct(logits.view(-1, self.vocab_size), labels.view(-1))
                 loss = masked_lm_loss
 
             elif pretrain_task == 'denoise':
-                # denoising loss
-                target_ids = labels
-                dec_state = self.decoder.init_decoder_state(input_ids, outputs.last_hidden_state)
-                dec_outputs, _ = self.decoder(target_ids[:, :-1], outputs.last_hidden_state, dec_state)
-                logits = self.generator(dec_outputs.view(-1, dec_outputs.size(-1)))
-                loss_fct = nn.NLLLoss(ignore_index=self.padding_idx, reduction='sum')
-                num_tokens = target_ids[:, 1:].ne(self.padding_idx).sum().item()
-                denoise_loss = loss_fct(logits, target_ids[:, 1:].contiguous().view(-1)) / num_tokens
+                dec_outputs = self.model.decoder.bert(
+                    input_ids=labels,
+                    encoder_hidden_states=enc_outputs.last_hidden_state,
+                    encoder_attention_mask=attention_mask,
+                )
+                logits = self.model.decoder.cls(dec_outputs.last_hidden_state)[:, :-1, :]
+                loss_fct = CrossEntropyLoss(ignore_index=self.padding_idx)
+                denoise_loss = loss_fct(logits.contiguous().view(-1, self.vocab_size),
+                                        labels[:, 1:].contiguous().view(-1))
                 loss = denoise_loss
 
-                # decoder kd loss with dec_out
-                contrast_dec_outputs = None
-                if contrast_monitor is not None and config.federate.train_dec_out:
-                    dec_loss_fct = nn.NLLLoss()
-                    dec_out_loss, num_items = 0, 0
-                    example_indices = [k for k in example_indices if k.item() in contrast_monitor.synth_tokens]
+        else:
+            # regular loss
+            if self.task in {'imdb', 'agnews'}:
+                pooled_output = self.dropout(enc_outputs.pooler_output)
+                logits = self.classifier(pooled_output)
+                loss_fct = CrossEntropyLoss()
+                loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
 
-                    if len(example_indices) > 0:
-                        example_indices = torch.stack(example_indices)
-                        synth_input_ids = torch.stack([contrast_monitor.synth_tokens[k.item()] for k in example_indices]).to(config.device)
-                        contrast_enc_hidden = torch.stack([contrast_monitor.enc_hidden[k.item()] for k in example_indices]).to(config.device)
-                        contrast_dec_state = self.decoder.init_decoder_state(synth_input_ids, contrast_enc_hidden)
-                        contrast_dec_outputs, _ = self.decoder(synth_input_ids[:, :-1], contrast_enc_hidden, contrast_dec_state)
-                        pred_logits = self.generator(contrast_dec_outputs.view(-1, contrast_dec_outputs.size(-1)))
+            elif self.task in {'squad', 'newsqa'}:
+                logits = self.classifier(enc_outputs.last_hidden_state)
+                start_logits, end_logits = logits.split(1, dim=-1)
+                start_logits = start_logits.squeeze(-1).contiguous()
+                end_logits = end_logits.squeeze(-1).contiguous()
+                logits = (start_logits, end_logits)
 
-                        group_ids, dec_out = contrast_monitor.group_ids, contrast_monitor.dec_out
-                        inside_weight, outside_weight = config.aggregator.inside_weight, config.aggregator.outside_weight
-                        for cid in group_ids:
-                            if dec_out[cid] is None or cid == client_id:
-                                continue
-                            cur_compare_preds = torch.stack([dec_out[cid][k.item()] for k in example_indices]).to(config.device)
-                            cur_loss = dec_loss_fct(pred_logits, cur_compare_preds.contiguous().view(-1))
+                # sometimes the start/end positions are outside our model inputs, we ignore these terms
+                ignored_index = start_logits.size(1)
+                start_positions = start_positions.clamp(0, ignored_index)
+                end_positions = end_positions.clamp(0, ignored_index)
 
-                            if group_ids[cid] == group_ids[client_id]:
-                                dec_out_loss += inside_weight * cur_loss
-                                num_items += inside_weight
-                            else:
-                                dec_out_loss += outside_weight * cur_loss
-                                num_items += outside_weight
+                loss_fct = CrossEntropyLoss(ignore_index=ignored_index)
+                start_loss = loss_fct(start_logits, start_positions)
+                end_loss = loss_fct(end_logits, end_positions)
+                loss = (start_loss + end_loss) / 2
 
-                        if num_items > 0:
-                            # print('Denoise loss: {:.4f}\tContrast loss: {:.4f}'
-                            #       .format(denoise_loss.detach().cpu(), contrast_loss.detach().cpu() / num_contrast_item))
-                            loss += dec_out_loss / num_items
-
-                # decoder contrastive loss with dec_hidden
-                if contrast_monitor is not None and config.federate.train_dec_hidden:
-                    example_indices = [k for k in example_indices if k.item() in contrast_monitor.synth_tokens]
-                    if len(example_indices) > 0:
-                        example_indices = torch.stack(example_indices)
-                        if contrast_dec_outputs is None:
-                            synth_input_ids = torch.stack([contrast_monitor.synth_tokens[k.item()] for k in example_indices]).to(config.device)
-                            contrast_enc_hidden = torch.stack([contrast_monitor.enc_hidden[k.item()] for k in example_indices]).to(config.device)
-                            contrast_dec_state = self.decoder.init_decoder_state(synth_input_ids, contrast_enc_hidden)
-                            contrast_dec_outputs, _ = self.decoder(synth_input_ids[:, :-1], contrast_enc_hidden, contrast_dec_state)
-                        cur_dec_hidden = self.contrast_head(contrast_dec_outputs)
-
-                        group_ids, all_dec_hiddens = contrast_monitor.group_ids, contrast_monitor.dec_hidden
-                        group2client_ids = {}
-                        for k, v in group_ids.items():
-                            if group2client_ids.get(v, None) is None:
-                                group2client_ids[v] = []
-                            group2client_ids[v].append(k)
-                        group_dec_hiddens = {}
-                        for k, v in group2client_ids.items():
-                            group_dec_hiddens[k] = torch.stack([torch.stack([
-                                all_dec_hiddens[cid][k.item()] for k in example_indices]) for cid in v]).mean(dim=0)
-
-                        cur_group_id = group_ids[client_id]
-                        sim_hiddens = group_dec_hiddens[cur_group_id]
-                        sim_matrix = F.cosine_similarity(cur_dec_hidden, sim_hiddens, dim=-1)
-                        dissim_hiddens = [v for k, v in group_dec_hiddens.items() if k != cur_group_id]
-                        dissim_matrix = None
-                        if len(dissim_hiddens) > 0:
-                            dissim_hiddens = torch.stack(dissim_hiddens, dim=1)
-                            dissim_matrix = F.cosine_similarity(cur_dec_hidden.unsqueeze(1), dissim_hiddens)
-
-                        temperature = config.federate.contrast_temp
-                        if dissim_matrix is not None:
-                            nominator = torch.exp(sim_matrix / temperature)
-                            denominator = torch.exp(dissim_matrix / temperature)
-                            dec_hidden_loss = -torch.log(nominator / torch.sum(denominator, dim=-1))
-                        else:
-                            dec_hidden_loss = sim_matrix / temperature
-                        dec_hidden_loss = torch.sum(dec_hidden_loss) / sim_matrix.size(0)
-                        loss += dec_hidden_loss
-
-        elif task in {'imdb', 'agnews'}:
-            pooled_output = self.dropout(outputs.pooler_output)
-            logits = self.classifier[task](pooled_output)
-            loss_fct = CrossEntropyLoss()
-            loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
-
-        elif task in {'squad', 'newsqa'}:
-            logits = self.classifier[task](outputs.last_hidden_state)
-            start_logits, end_logits = logits.split(1, dim=-1)
-            start_logits = start_logits.squeeze(-1).contiguous()
-            end_logits = end_logits.squeeze(-1).contiguous()
-            logits = (start_logits, end_logits)
-            # sometimes the start/end positions are outside our model inputs, we ignore these terms
-            ignored_index = start_logits.size(1)
-            start_positions = start_positions.clamp(0, ignored_index)
-            end_positions = end_positions.clamp(0, ignored_index)
-
-            loss_fct = CrossEntropyLoss(ignore_index=ignored_index)
-            start_loss = loss_fct(start_logits, start_positions)
-            end_loss = loss_fct(end_logits, end_positions)
-            loss = (start_loss + end_loss) / 2
-
-        elif task in {'cnndm', 'msqg'}:
-            target_ids = labels
-            dec_state = self.decoder.init_decoder_state(input_ids, outputs.last_hidden_state)
-            decoder_outputs, state = self.decoder(target_ids[:, :-1], outputs.last_hidden_state, dec_state)
-            logits = self.generator(decoder_outputs.view(-1, decoder_outputs.size(-1)))
-
-            label_smoothing = config.model.label_smoothing if self.training else 0.0
-            if label_smoothing > 0:
-                loss_fct = LabelSmoothingLoss(
-                    label_smoothing,
-                    self.vocab_size,
-                    ignore_index=self.padding_idx,
-                ).to(logits.device)
-            else:
-                loss_fct = nn.NLLLoss(
-                    ignore_index=self.padding_idx,
-                    reduction='sum',
+            elif self.task in {'cnndm', 'msqg'}:
+                dec_outputs = self.model.decoder.bert(
+                    input_ids=labels,
+                    encoder_hidden_states=enc_outputs.last_hidden_state,
+                    encoder_attention_mask=attention_mask,
                 )
-            num_tokens = target_ids[:, 1:].ne(self.padding_idx).sum().item()
-            loss = loss_fct(logits, target_ids[:, 1:].contiguous().view(-1)) / num_tokens
+                dec_hidden_states = dec_outputs.last_hidden_state
+                logits = self.model.decoder.cls(dec_hidden_states)[:, :-1, :]
 
-        return ModelOutput(
-            loss=loss,
-            logits=logits,
-            hidden_states=outputs.hidden_states,
-        )
+                num_tokens = labels[:, 1:].ne(self.padding_idx).sum().item()
+                label_smoothing = self.label_smoothing if self.training else 0.0
+                if label_smoothing > 0:
+                    loss_fct = LabelSmoothingLoss(
+                        label_smoothing,
+                        self.vocab_size,
+                        ignore_index=self.padding_idx,
+                    ).to(logits.device)
+                    loss = loss_fct(F.log_softmax(logits.contiguous().view(-1, self.vocab_size), dim=-1),
+                                    labels[:, 1:].contiguous().view(-1)) / num_tokens
+                else:
+                    loss_fct = CrossEntropyLoss(ignore_index=self.padding_idx)
+                    loss = loss_fct(logits.contiguous().view(-1, self.vocab_size),
+                                    labels[:, 1:].contiguous().view(-1))
+            regular_loss = loss.clone()
 
-    def _init_params(self):
-        self.encoder._init_weights(self.contrast_head.dense)
-        self.encoder._init_weights(self.contrast_head.out_prj)
-        for module in self.decoder.modules():
-            if isinstance(module, (nn.Linear, nn.Embedding)):
-                module.weight.data.normal_(mean=0.0, std=0.02)
-            elif isinstance(module, nn.LayerNorm):
-                module.bias.data.zero_()
-                module.weight.data.fill_(1.0)
-            if isinstance(module, nn.Linear) and module.bias is not None:
-                module.bias.data.zero_()
-        for p in self.generator.parameters():
-            if p.dim() > 1:
-                nn.init.xavier_uniform_(p)
-            else:
-                p.data.zero_()
+            # contrastive loss
+            if self.training and self.train_contrast:
+                example_indices = [k for k in example_indices if k.item() in contrast_monitor.synth_tokens]
+                all_group_ids = contrast_monitor.all_group_ids[self.client_id]
+                topk_group_ids = contrast_monitor.topk_group_ids[self.client_id]
+                if len(example_indices) > 0 and len(topk_group_ids) > 1:
+                    example_indices = torch.stack(example_indices)
+                    synth_input_ids = torch.stack([contrast_monitor.synth_tokens[k.item()]
+                                                   for k in example_indices]).to(self.model.device)
+
+                    contrast_enc_hidden = torch.stack([contrast_monitor.enc_hidden[k.item()]
+                                                       for k in example_indices]).to(self.model.device)
+                    contrast_outputs = self.model.decoder.bert(
+                        input_ids=synth_input_ids,
+                        encoder_hidden_states=contrast_enc_hidden,
+                    )
+                    cur_dec_hidden = self.contrast_head(contrast_outputs.last_hidden_state).mean(1)
+                    # contrast_outputs = self.model(
+                    #     input_ids=synth_input_ids,
+                    #     decoder_input_ids=synth_input_ids,
+                    #     output_hidden_states=True,
+                    # )
+                    # cur_dec_hidden = self.contrast_head(contrast_outputs.decoder_hidden_states[-1]).mean(1)
+
+                    pos_client_ids = [x for x in topk_group_ids[1: self.contrast_topk + 1]]
+                    all_dec_hiddens = contrast_monitor.dec_hidden
+                    sim_hiddens = [[all_dec_hiddens[cid][k.item()] for k in example_indices] for cid in pos_client_ids]
+                    sim_hiddens = torch.stack([torch.stack(hid) for hid in sim_hiddens]).mean(0).to(self.model.device)
+                    sim_matrix = F.cosine_similarity(cur_dec_hidden, sim_hiddens, dim=-1)
+                    nominator = sim_matrix / self.contrast_temp
+
+                    neg_client_ids = [x for x in all_group_ids[::-1][:self.contrast_topk] if x not in topk_group_ids]
+                    if len(neg_client_ids) > 0:
+                        dissim_hiddens = [[all_dec_hiddens[cid][k.item()] for k in example_indices] for cid in neg_client_ids]
+                        dissim_hiddens = torch.stack([torch.stack(hid) for hid in dissim_hiddens]).to(self.model.device)
+                        dissim_matrix = F.cosine_similarity(cur_dec_hidden.unsqueeze(0), dissim_hiddens, dim=-1)
+                        denominator = torch.exp(dissim_matrix / self.contrast_temp).sum(0)
+                        contrast_loss = -torch.log(torch.exp(nominator) / denominator).mean()
+                    else:
+                        contrast_loss = -nominator.mean()
+                    loss += contrast_loss
+
+                    # if self.train_dec_out:
+                    #     contrast_logits = self.model.decoder.cls(contrast_dec_outputs.last_hidden_state)[:, :-1, :]
+                    #
+                    #     dec_loss_fct = CrossEntropyLoss()
+                    #     dec_out_loss, num_items = 0, 0
+                    #     dec_out = contrast_monitor.dec_out
+                    #     for cid in group_ids:
+                    #         if cid == self.client_id: continue
+                    #         cur_compare_logits = torch.stack([dec_out[cid][k.item()] for k in example_indices]).to(self.model.device)
+                    #         cur_loss = dec_loss_fct(contrast_logits.contiguous().view(-1, self.vocab_size), cur_compare_logits.view(-1))
+                    #
+                    #         if cid in group_ids[self.client_id]:
+                    #             dec_out_loss += inside_weight * cur_loss
+                    #             num_items += inside_weight
+                    #         else:
+                    #             dec_out_loss += outside_weight * cur_loss
+                    #             num_items += outside_weight
+                    #
+                    #     if num_items > 0:
+                    #         dec_out_loss /= num_items
+                    #         loss += dec_out_loss
+
+        return ModelOutput(loss=loss,
+                           regular_loss=regular_loss,
+                           contrast_loss=contrast_loss,
+                           logits=logits)
 
 
 def call_pfednlp_contrast_model(model_config, local_data):

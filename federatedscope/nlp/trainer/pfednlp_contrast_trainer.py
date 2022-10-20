@@ -5,13 +5,12 @@ import torch
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 from federatedscope.register import register_trainer
-from federatedscope.core.auxiliaries.ReIterator import ReIterator
-from federatedscope.core.monitors.metric_calculator import MetricCalculator
+from federatedscope.nlp.monitors.metric_calculator import MetricCalculator
 from federatedscope.nlp.trainer.pfednlp_trainer import PFedNLPTrainer
-from federatedscope.nlp.trainer.context import PFedNLPContext
-from federatedscope.nlp.trainer.utils import ContrastiveMonitor
-from federatedscope.nlp.dataset.squad import SquadResult
-from federatedscope.nlp.dataset.newsqa import NewsQAResult
+from federatedscope.nlp.trainer.context import FedNLPContext
+from federatedscope.nlp.trainer.utils import ContrastiveMonitor, AverageMeter
+from federatedscope.nlp.dataset.data.squad import SquadResult
+from federatedscope.nlp.dataset.data.newsqa import NewsQAResult
 
 logger = logging.getLogger(__name__)
 
@@ -21,16 +20,19 @@ class PFedNLPContrastTrainer(PFedNLPTrainer):
     def __init__(self, model, data, device, config, only_for_eval=False):
         self.cfg = config
         self.metric_calculator = MetricCalculator(config.eval.metrics)
-        self.task = config.data.task
+        self.task = config.model.task
         self.pretrain_task = None
         self.ID = None
         self.load_ckpt = True
+        self.pred_file, self.src_file, self.tgt_file = None, None, None
+        self.finish_eval = False
 
-        self.ctx = PFedNLPContext(model=model,
-                                  cfg=self.cfg,
-                                  data=data,
-                                  device=device,
-                                  init_dict=self.parse_data(data))
+        self.ctx = FedNLPContext(model=model,
+                                 cfg=self.cfg,
+                                 data=data,
+                                 device=device,
+                                 init_dict=self.parse_data(data))
+        self.ctx.init_params = copy.deepcopy(model.state_dict())
         self.ctx.contrast_monitor = ContrastiveMonitor()
 
         # Atomic operation during training/evaluation
@@ -53,10 +55,14 @@ class PFedNLPContrastTrainer(PFedNLPTrainer):
     def update_contrast_monitor(self, contrast_monitor):
         self.ctx.contrast_monitor = contrast_monitor
 
+    def update_stat(self, ID):
+        super().update_stat(ID)
+        self.ctx.model.update_client_id(ID)
+
     @property
     def _in_contrast_prepare(self):
-        return self.task == 'pretrain' and self.ctx.cur_data_split == 'train' and \
-               self.ctx.contrast_monitor.stat in {0, 1}
+        return self.task != 'pretrain' and self.ctx.cur_data_split == 'train' and \
+               self.ctx.contrast_monitor.stat == 1
 
     def _run_routine(self, mode, hooks_set, dataset_name=None):
         if dataset_name is None:
@@ -66,24 +72,11 @@ class PFedNLPContrastTrainer(PFedNLPTrainer):
 
         raw_num_train_epoch, raw_num_train_batch = None, None
         if self._in_contrast_prepare:
-            assert mode == 'train'
-            if self.ctx.contrast_monitor.stat == 0:
-                self.ctx.contrast_monitor.update_mlm_head_params(self.ctx.model.encoder.cls.cpu().state_dict())
-
-            if self.pretrain_task != 'denoise':
-                self.ctx.contrast_monitor.update_stat(self.ctx.contrast_monitor.stat + 1)
-                self.ctx.num_samples_train = 0
-
-                self.ctx.pop_mode()
-                self.ctx.reset_used_dataset()
-                self.ctx.model.to(torch.device('cpu'))
-                return
-
             raw_num_train_epoch, raw_num_train_batch = self.ctx.num_train_epoch, self.ctx.num_train_batch
-            batch_size, drop_last = self.ctx.cfg.data.batch_size, self.ctx.cfg.data.drop_last
+            batch_size = self.ctx.cfg.data.batch_size
+            num_contrast_data = len(self.ctx.contrast_monitor.synth_tokens)
             self.ctx.num_train_epoch = 1
-            self.ctx.num_train_batch = min(self.ctx.cfg.federate.num_contrast, self.ctx.num_train_data) // batch_size + \
-                                       int(not drop_last and bool(self.ctx.num_train_data % batch_size))
+            self.ctx.num_train_batch = num_contrast_data // batch_size + bool(num_contrast_data % batch_size)
             self.ctx.num_train_batch_last_epoch = self.ctx.num_train_batch
             self.ctx.num_total_train_batch = self.ctx.num_train_epoch * self.ctx.num_train_batch
 
@@ -96,7 +89,7 @@ class PFedNLPContrastTrainer(PFedNLPTrainer):
                 hook(self.ctx)
 
             for batch_i in tqdm(range(self.ctx.get('num_{}_batch'.format(dataset_name))),
-                                disable=not self._in_contrast_prepare):
+                                disable=not (self._in_contrast_prepare or self.ctx.cur_data_split == 'test')):
                 self.ctx.cur_batch_i = batch_i
                 for hook in hooks_set['on_batch_start']:
                     hook(self.ctx)
@@ -138,8 +131,7 @@ class PFedNLPContrastTrainer(PFedNLPTrainer):
             )
         self._run_routine('train', hooks_set, target_data_split_name)
 
-        return self.ctx.num_samples_train, self.get_model_para(), self.get_model_grads(), \
-               self.ctx.contrast_monitor, self.ctx.eval_metrics
+        return self.ctx.num_samples_train, self.get_model_para(), self.get_model_grads(), self.ctx.contrast_monitor, self.ctx.eval_metrics
 
     def parse_data(self, data):
         init_dict = dict()
@@ -175,9 +167,12 @@ class PFedNLPContrastTrainer(PFedNLPTrainer):
         if self._in_contrast_prepare:
             setattr(ctx, 'train_loader', ctx.get('train_contrast_loader'))
         else:
+            setattr(ctx, 'regular_loss_agg_{}'.format(ctx.cur_data_split), AverageMeter())
+            setattr(ctx, 'contrast_loss_agg_{}'.format(ctx.cur_data_split), AverageMeter())
             setattr(ctx, 'train_loader', ctx.get('train_raw_loader'))
 
     def _hook_on_batch_forward(self, ctx):
+        ctx.contrast_loss_batch = None
         if self.task == 'pretrain':
             token_ids = ctx.data_batch[self.pretrain_task]['token_ids']
             attention_mask = ctx.data_batch[self.pretrain_task]['attention_mask']
@@ -189,45 +184,17 @@ class PFedNLPContrastTrainer(PFedNLPTrainer):
                 attention_mask=attention_mask.to(ctx.device),
                 labels=labels.to(ctx.device),
                 pretrain_task=self.pretrain_task,
-                in_contrast_prepare=self._in_contrast_prepare,
-                contrast_monitor=ctx.contrast_monitor if ctx.cur_data_split == 'train' else None,
                 example_indices=example_indices,
-                client_id=self.ID,
-                config=ctx.cfg,
             )
-
-            contrast_stat = ctx.contrast_monitor.stat
-            if ctx.cur_data_split == 'train' and contrast_stat in {0, 1}:
-                if contrast_stat == 0:
-                    enc_hidden = outputs.hidden_states
-                    if enc_hidden is not None:
-                        enc_hidden = enc_hidden.detach().cpu()
-                        for ex, hids in zip(example_indices, enc_hidden):
-                            if ex.item() < ctx.cfg.federate.num_contrast:
-                                ctx.contrast_monitor.update_enc_hidden(hids, k=ex.item())
-                elif contrast_stat == 1:
-                    dec_out, dec_hidden = outputs.logits, outputs.hidden_states
-                    example_indices = outputs.example_indices
-                    if dec_out is not None:
-                        dec_out = dec_out.detach().cpu()
-                        for ex, out in zip(example_indices, dec_out):
-                            ctx.contrast_monitor.update_dec_out(out, k=ex.item())
-                    if dec_hidden is not None:
-                        dec_hidden = dec_hidden.detach().cpu()
-                        for ex, hids in zip(example_indices, dec_hidden):
-                            ctx.contrast_monitor.update_dec_hidden(hids, k=ex.item())
-                return
-
-            elif (ctx.cur_data_split == 'train' and contrast_stat == 2) or ctx.cur_data_split != 'train':
-                ctx.batch_size = len(token_ids)
-                ctx.loss_batch = outputs.loss
-                if self.pretrain_task == 'mlm':
-                    ctx.y_true = labels
-                elif self.pretrain_task == 'denoise':
-                    ctx.y_true = labels[:, 1:].contiguous().view(-1)
-                count_idx = ctx.y_true.ne(-100) & ctx.y_true.ne(ctx.padding_idx)
-                ctx.y_true = ctx.y_true[count_idx]
-                ctx.y_prob = outputs.logits[count_idx]
+            ctx.batch_size = len(token_ids)
+            ctx.loss_batch = outputs.loss
+            if self.pretrain_task == 'mlm':
+                ctx.y_true = labels
+            elif self.pretrain_task == 'denoise':
+                ctx.y_true = labels[:, 1:]
+            count_idx = ctx.y_true.ne(-100) & ctx.y_true.ne(ctx.padding_idx)
+            ctx.y_true = ctx.y_true[count_idx]
+            ctx.y_pred = outputs.logits.argmax(dim=-1)[count_idx]
 
         else:
             token_ids = ctx.data_batch.get('token_ids', None)
@@ -244,13 +211,17 @@ class PFedNLPContrastTrainer(PFedNLPTrainer):
                     token_type_ids=token_type_ids.to(ctx.device),
                     attention_mask=attention_mask.to(ctx.device),
                     labels=labels.to(ctx.device),
-                    config=ctx.cfg,
+                    contrast_monitor=ctx.contrast_monitor,
+                    in_contrast_prepare=self._in_contrast_prepare,
+                    example_indices=example_indices,
                 )
-
-                ctx.batch_size = len(token_ids)
-                ctx.loss_batch = outputs.loss
-                ctx.y_true = labels
-                ctx.y_prob = outputs.logits
+                if not self._in_contrast_prepare:
+                    ctx.batch_size = len(token_ids)
+                    ctx.loss_batch = outputs.loss
+                    ctx.regular_loss_batch = outputs.regular_loss
+                    ctx.contrast_loss_batch = outputs.contrast_loss
+                    ctx.y_true = labels
+                    ctx.y_pred = outputs.logits.argmax(dim=-1)
 
             elif self.task in {'squad', 'newsqa'}:
                 outputs = ctx.model(
@@ -259,44 +230,93 @@ class PFedNLPContrastTrainer(PFedNLPTrainer):
                     attention_mask=attention_mask.to(ctx.device),
                     start_positions=start_positions.to(ctx.device),
                     end_positions=end_positions.to(ctx.device),
-                    config=ctx.cfg,
+                    contrast_monitor=ctx.contrast_monitor,
+                    in_contrast_prepare=self._in_contrast_prepare,
+                    example_indices=example_indices,
                 )
+                if not self._in_contrast_prepare:
+                    for i, example_idx in enumerate(example_indices):
+                        encoded_input = ctx.get('{}_encoded'.format(ctx.cur_data_split))[example_idx.item()]
+                        unique_id = int(encoded_input.unique_id)
+                        start_logits = outputs.logits[0][i].detach().cpu().tolist()
+                        end_logits = outputs.logits[1][i].detach().cpu().tolist()
+                        if ctx.cur_data_split != 'train':
+                            if self.task == 'squad':
+                                ctx.get('{}_squad_results'.format(ctx.cur_data_split)).append(
+                                        SquadResult(unique_id, start_logits, end_logits))
+                            elif self.task == 'newsqa':
+                                ctx.get('{}_newsqa_results'.format(ctx.cur_data_split)).append(
+                                        NewsQAResult(unique_id, start_logits, end_logits))
 
-                for i, example_idx in enumerate(example_indices):
-                    encoded_input = ctx.get('{}_encoded'.format(ctx.cur_data_split))[example_idx.item()]
-                    unique_id = int(encoded_input.unique_id)
-                    start_logits = outputs.logits[0][i].detach().cpu().tolist()
-                    end_logits = outputs.logits[1][i].detach().cpu().tolist()
-                    if ctx.cur_data_split != 'train':
-                        if self.task == 'squad':
-                            ctx.get('{}_squad_results'.format(ctx.cur_data_split)).append(
-                                    SquadResult(unique_id, start_logits, end_logits))
-                        elif self.task == 'newsqa':
-                            ctx.get('{}_newsqa_results'.format(ctx.cur_data_split)).append(
-                                    NewsQAResult(unique_id, start_logits, end_logits))
-
-                ctx.batch_size = len(token_ids)
-                ctx.loss_batch = outputs.loss
-                ctx.y_true = torch.cat([start_positions, end_positions])
-                ctx.y_prob = torch.cat(outputs.logits)
+                    ctx.batch_size = len(token_ids)
+                    ctx.loss_batch = outputs.loss
+                    ctx.regular_loss_batch = outputs.regular_loss
+                    ctx.contrast_loss_batch = outputs.contrast_loss
+                    ctx.y_true = torch.cat([start_positions, end_positions])
+                    ctx.y_pred = torch.cat([out.argmax(dim=-1) for out in outputs.logits])
 
             elif self.task in {'cnndm', 'msqg'}:
-                outputs = ctx.model(
-                    input_ids=token_ids.to(ctx.device),
-                    token_type_ids=token_type_ids.to(ctx.device),
-                    attention_mask=attention_mask.to(ctx.device),
-                    labels=labels.to(ctx.device),
-                    config=ctx.cfg,
-                )
+                if ctx.cur_data_split != 'test':
+                    outputs = ctx.model(
+                        input_ids=token_ids.to(ctx.device),
+                        token_type_ids=token_type_ids.to(ctx.device),
+                        attention_mask=attention_mask.to(ctx.device),
+                        labels=labels.to(ctx.device),
+                        contrast_monitor=ctx.contrast_monitor,
+                        in_contrast_prepare=self._in_contrast_prepare,
+                        example_indices=example_indices,
+                    )
+                    if not self._in_contrast_prepare:
+                        ctx.batch_size = len(labels)
+                        ctx.loss_batch = outputs.loss
+                        ctx.regular_loss_batch = outputs.regular_loss
+                        ctx.contrast_loss_batch = outputs.contrast_loss
+                        ctx.y_pred = outputs.logits.argmax(dim=-1)
+                        ctx.y_true = labels[:, 1:]
+                        non_padding_idx = ctx.y_true.ne(ctx.padding_idx)
+                        ctx.y_true = ctx.y_true[non_padding_idx]
+                        ctx.y_pred = ctx.y_pred[non_padding_idx]
 
-                ctx.batch_size = len(labels)
-                ctx.loss_batch = outputs.loss
-                ctx.y_true = labels[:, 1:].contiguous().view(-1)
-                non_padding_idx = ctx.y_true.ne(ctx.padding_idx)
-                ctx.y_true = ctx.y_true[non_padding_idx]
-                ctx.y_prob = outputs.logits[non_padding_idx]
+                else:
+                    outputs = ctx.model.generate(
+                        input_ids=token_ids.to(ctx.device),
+                        token_type_ids=token_type_ids.to(ctx.device),
+                        attention_mask=attention_mask.to(ctx.device),
+                    )
+                    # save to file
+                    out_str = ctx.tokenizer.batch_decode(outputs)
+                    src_str = ctx.tokenizer.batch_decode(token_ids)
+                    ref_str = ctx.tokenizer.batch_decode(labels)
+                    for out, src, ref in zip(out_str, src_str, ref_str):
+                        out = self._remove_special_tokens(out)
+                        src = self._remove_special_tokens(src)
+                        ref = self._remove_special_tokens(ref)
+                        self.pred_file.write(out + '\n')
+                        self.src_file.write(src + '\n')
+                        self.tgt_file.write(ref + '\n')
+                    self.pred_file.flush()
+                    self.src_file.flush()
+                    self.tgt_file.flush()
 
-        ctx.get('loss_agg_{}'.format(ctx.cur_data_split)).update(ctx.loss_batch.detach().item(), ctx.batch_size)
+                    ctx.batch_size = len(labels)
+                    ctx.y_pred = outputs
+                    ctx.y_true = labels[:, 1:]
+                    return
+
+        if self._in_contrast_prepare:
+            dec_out, dec_hidden, example_indices = outputs.logits, outputs.hidden_states, outputs.example_indices
+            for ex, out in zip(example_indices, dec_out.detach().cpu()):
+                ctx.contrast_monitor.update_dec_out(out, k=ex.item())
+            for ex, hids in zip(example_indices, dec_hidden.detach().cpu()):
+                ctx.contrast_monitor.update_dec_hidden(hids, k=ex.item())
+        else:
+            ctx.get('loss_agg_{}'.format(ctx.cur_data_split)).update(ctx.loss_batch.detach().item(), ctx.batch_size)
+            if ctx.get('regular_loss_batch', None) is not None:
+                ctx.get('regular_loss_agg_{}'.format(ctx.cur_data_split)).update(
+                    ctx.regular_loss_batch.detach().item(), ctx.batch_size)
+            if ctx.get('contrast_loss_batch', None) is not None:
+                ctx.get('contrast_loss_agg_{}'.format(ctx.cur_data_split)).update(
+                    ctx.contrast_loss_batch.detach().item(), ctx.batch_size)
 
     def _hook_on_batch_forward_regularizer(self, ctx):
         if self._in_contrast_prepare:
@@ -312,12 +332,19 @@ class PFedNLPContrastTrainer(PFedNLPTrainer):
         if self._in_contrast_prepare:
             return
         super()._hook_on_batch_end(ctx)
+        ctx.regular_loss_batch = None
+        ctx.contrast_loss_batch = None
 
     def _hook_on_fit_end(self, ctx):
-        if self.task == 'pretrain' and ctx.cur_data_split == 'train':
+        if self.task != 'pretrain' and ctx.cur_data_split == 'train':
             ctx.contrast_monitor.update_stat(ctx.contrast_monitor.stat + 1)
             return
         super()._hook_on_fit_end(ctx)
+
+    def _store_ctx(self, ctx):
+        store_dict = super()._store_ctx(ctx)
+        store_dict['contrast_loss_batch'] = ctx.loss_batch
+        return store_dict
 
 
 def call_pfednlp_contrast_trainer(trainer_type):

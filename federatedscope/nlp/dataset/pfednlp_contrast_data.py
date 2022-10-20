@@ -4,12 +4,12 @@ from tqdm import tqdm
 from torch.utils.data import DataLoader
 from federatedscope.register import register_data
 from federatedscope.nlp.trainer.utils import setup_tokenizer
-from federatedscope.nlp.dataset.imdb import create_imdb_dataset
-from federatedscope.nlp.dataset.agnews import create_agnews_dataset
-from federatedscope.nlp.dataset.squad import create_squad_dataset
-from federatedscope.nlp.dataset.newsqa import create_newsqa_dataset
-from federatedscope.nlp.dataset.cnndm import create_cnndm_dataset
-from federatedscope.nlp.dataset.msqg import create_msqg_dataset
+from federatedscope.nlp.dataset.data.imdb import create_imdb_dataset
+from federatedscope.nlp.dataset.data.agnews import create_agnews_dataset
+from federatedscope.nlp.dataset.data.squad import create_squad_dataset
+from federatedscope.nlp.dataset.data.newsqa import create_newsqa_dataset
+from federatedscope.nlp.dataset.data.cnndm import create_cnndm_dataset
+from federatedscope.nlp.dataset.data.msqg import create_msqg_dataset
 from federatedscope.nlp.dataset.data_collators import DataCollatorForPFedNLP
 
 logger = logging.getLogger(__name__)
@@ -48,9 +48,9 @@ def create_data(root, split, tokenizer, task, model_type, max_seq_len, max_query
 
 
 def load_pfednlp_contrast_data(config, client_config):
-    model_type = config.model.bert_type
-    tokenizer = setup_tokenizer(config.model.bert_type)
-    pretrain = config.data.task == 'pretrain'
+    model_type = config.model.model_type
+    tokenizer = setup_tokenizer(config)
+    pretrain = config.model.task == 'pretrain'
     cache_dir = config.data.cache_dir if config.data.cache_dir else ''
     debug = config.data.debug
     data_collator = DataCollatorForPFedNLP(tokenizer=tokenizer) if pretrain else None
@@ -58,25 +58,19 @@ def load_pfednlp_contrast_data(config, client_config):
     logger.info('Preprocessing dataset')
     data_dict = dict()
     for client_id in tqdm(range(1, config.federate.client_num + 1)):
-        cfg = config if pretrain else client_config['client_{}'.format(client_id)]
-        cur_task = cfg.data.downstream_tasks[client_id - 1] if pretrain else cfg.data.task
-        # root = osp.join(config.data.root, cur_task)
+        cfg_client = config if pretrain else client_config['client_{}'.format(client_id)]
+        cur_task = cfg_client.model.downstream_tasks[client_id - 1] if pretrain else cfg_client.model.task
         root = osp.join(config.data.root, str(client_id))
-        batch_size = config.data.batch_size if pretrain else getattr(config.data.all_batch_size, cur_task)
-        max_seq_len = config.data.max_pretrain_seq_len if pretrain else getattr(config.data.max_seq_len, cur_task)
-        max_query_len = getattr(config.data.max_query_len, cur_task, None)
-        trunc_stride = getattr(config.data.trunc_stride, cur_task, None)
-        max_tgt_len = getattr(config.data.max_tgt_len, cur_task, None)
 
         train_data, val_data, test_data = [create_data(root=root,
                                            split=split,
                                            tokenizer=tokenizer,
                                            task=cur_task,
                                            model_type=model_type,
-                                           max_seq_len=max_seq_len,
-                                           max_query_len=max_query_len,
-                                           trunc_stride=trunc_stride,
-                                           max_tgt_len=max_tgt_len,
+                                           max_seq_len=getattr(cfg_client.data, 'max_seq_len', None),
+                                           max_query_len=getattr(cfg_client.data, 'max_query_len', None),
+                                           trunc_stride=getattr(cfg_client.data, 'trunc_stride', None),
+                                           max_tgt_len=getattr(cfg_client.data, 'max_tgt_len', None),
                                            cache_dir=cache_dir,
                                            client_id=client_id,
                                            pretrain=pretrain,
@@ -85,7 +79,7 @@ def load_pfednlp_contrast_data(config, client_config):
 
         dataloader_dict = {
             'train_raw': {'dataloader': DataLoader(dataset=train_data[0],
-                                                   batch_size=batch_size,
+                                                   batch_size=cfg_client.data.batch_size,
                                                    shuffle=config.data.shuffle,
                                                    num_workers=config.data.num_workers,
                                                    collate_fn=data_collator,
@@ -93,7 +87,7 @@ def load_pfednlp_contrast_data(config, client_config):
                           'encoded': train_data[1],
                           'examples': train_data[2]},
             'train_contrast': {'dataloader': DataLoader(dataset=train_data[0],
-                                                        batch_size=batch_size,
+                                                        batch_size=cfg_client.data.batch_size,
                                                         shuffle=False,
                                                         num_workers=config.data.num_workers,
                                                         collate_fn=data_collator,
@@ -101,7 +95,7 @@ def load_pfednlp_contrast_data(config, client_config):
                                'encoded': train_data[1],
                                'examples': train_data[2]},
             'val': {'dataloader': DataLoader(dataset=val_data[0],
-                                             batch_size=batch_size,
+                                             batch_size=cfg_client.data.batch_size,
                                              shuffle=False,
                                              num_workers=config.data.num_workers,
                                              collate_fn=data_collator,
@@ -109,7 +103,7 @@ def load_pfednlp_contrast_data(config, client_config):
                     'encoded': val_data[1],
                     'examples': val_data[2]},
             'test': {'dataloader': DataLoader(dataset=test_data[0],
-                                              batch_size=batch_size,
+                                              batch_size=cfg_client.data.batch_size,
                                               shuffle=False,
                                               num_workers=config.data.num_workers,
                                               collate_fn=data_collator,

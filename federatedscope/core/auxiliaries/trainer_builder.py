@@ -110,6 +110,10 @@ def get_trainer(model=None,
         # copy construct style: instance a (class A) -> instance b (class B)
         trainer = FedEMTrainer(model_nums=config.model.model_num_per_trainer,
                                base_trainer=trainer)
+    elif config.federate.method.lower() == "fedem-nlp":
+        from federatedscope.core.trainers.trainer_FedEM import FedEMNLPTrainer
+        trainer = FedEMNLPTrainer(model_nums=config.model.model_num_per_trainer,
+                                  base_trainer=trainer)
 
     # attacker plug-in
     if is_attacker:

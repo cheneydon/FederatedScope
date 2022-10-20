@@ -9,11 +9,11 @@ import numpy as np
 from collections import OrderedDict
 from federatedscope.register import register_trainer
 from federatedscope.core.auxiliaries.utils import filter_by_specified_keywords
-from federatedscope.core.monitors.metric_calculator import MetricCalculator, eval_acc
+from federatedscope.nlp.monitors.metric_calculator import MetricCalculator, eval_acc
 from federatedscope.nlp.trainer.fednlp_trainer import FedNLPTrainer
-from federatedscope.nlp.trainer.context import PFedNLPContext
-from federatedscope.nlp.dataset.squad import SquadResult
-from federatedscope.nlp.dataset.newsqa import NewsQAResult
+from federatedscope.nlp.trainer.context import FedNLPContext
+from federatedscope.nlp.dataset.data.squad import SquadResult
+from federatedscope.nlp.dataset.data.newsqa import NewsQAResult
 
 logger = logging.getLogger(__name__)
 
@@ -23,16 +23,19 @@ class PFedNLPTrainer(FedNLPTrainer):
     def __init__(self, model, data, device, config, only_for_eval=False):
         self.cfg = config
         self.metric_calculator = MetricCalculator(config.eval.metrics)
-        self.task = config.data.task
+        self.task = config.model.task
         self.pretrain_task = None
         self.ID = None
         self.load_ckpt = True
+        self.pred_file, self.src_file, self.tgt_file = None, None, None
+        self.finish_eval = False
 
-        self.ctx = PFedNLPContext(model=model,
-                                  cfg=self.cfg,
-                                  data=data,
-                                  device=device,
-                                  init_dict=self.parse_data(data))
+        self.ctx = FedNLPContext(model=model,
+                                 cfg=self.cfg,
+                                 data=data,
+                                 device=device,
+                                 init_dict=self.parse_data(data))
+        self.ctx.init_params = copy.deepcopy(model.state_dict())
 
         # Atomic operation during training/evaluation
         self.hooks_in_train = collections.defaultdict(list)
@@ -51,40 +54,21 @@ class PFedNLPTrainer(FedNLPTrainer):
             # in standalone mode, by default, we print the trainer info only once for better logs readability
             pass
 
+    def update(self, model_parameters):
+        super().update(model_parameters)
+        self.ctx.init_params = copy.deepcopy(self.ctx.model.state_dict())
+
     def update_task(self, task):
         self.pretrain_task = task
 
     def get_model_grads(self, filter_keywords=None):
-        if self.ctx.cfg.federate.method in ['local', 'global'] or len(self.ctx.get('model_grads', [])) == 0:
-            return torch.tensor([0.0])
-
         if filter_keywords is None:
             filter_keywords = self.ctx.cfg.personalization.local_param
-        named_parameters = list(self.ctx.model.named_parameters())
-        model_grads = self.ctx.model_grads
-        assert len(named_parameters) == len(model_grads)
-
-        grads = []
-        for (n, p), g in zip(named_parameters, model_grads):
-            assert p.size() == g.size()
+        grads = {}
+        for n, p2 in self.ctx.model.state_dict().items():
             if filter_by_specified_keywords(n, filter_keywords):  # preserve
-                grads.append(g.flatten())
-        grads = torch.cat(grads).cpu()
-        grads /= self.ctx.num_grad_accum
+                grads[n] = p2 - self.ctx.init_params[n]
         return grads
-
-    def _store_ctx(self, ctx):
-        store_dict = {}
-        store_dict['model_grads'] = ctx.model_grads
-        store_dict['num_grad_accum'] = ctx.num_grad_accum
-        store_dict['data_batch'] = ctx.data_batch
-        store_dict['batch_size'] = ctx.batch_size
-        store_dict['loss_task'] = ctx.loss_task
-        store_dict['loss_batch'] = ctx.loss_batch
-        store_dict['loss_regular'] = ctx.loss_regular
-        store_dict['y_true'] = ctx.y_true
-        store_dict['y_prob'] = ctx.y_prob
-        return store_dict
 
     def _load_model(self, ctx):
         load_path = ctx.cfg.federate.load_from
@@ -119,39 +103,17 @@ class PFedNLPTrainer(FedNLPTrainer):
             ckpt_path = osp.join(save_dir, 'client_model_{}.pt'.format(self.ID))
             torch.save(ckpt, ckpt_path)
 
-    def _get_grads(self, ctx, optimizer):
-        grads = []
-        num_grad_accum = ctx.batch_size * ctx.grad_accum_count
-        for o in optimizer:
-            for group in o.param_groups:
-                for p in group['params']:
-                    if p.grad is None:
-                        grads.append(torch.zeros_like(p))
-                    else:
-                        grads.append(p.grad.clone() * num_grad_accum)
-
-        if len(self.ctx.model_grads) == 0:
-            self.ctx.model_grads = grads
-        else:
-            self.ctx.model_grads = [x + y for x, y in zip(self.ctx.model_grads, grads)]
-        self.ctx.num_grad_accum += num_grad_accum
-
-    def train(self, target_data_split_name="train", hooks_set=None):
+    def train(self, target_data_split_name='train', hooks_set=None):
         hooks_set = self.hooks_in_train if hooks_set is None else hooks_set
         if self.ctx.get(
-                f"{target_data_split_name}_data") is None and self.ctx.get(
-                    f"{target_data_split_name}_loader") is None:
+                f'{target_data_split_name}_data') is None and self.ctx.get(
+                    f'{target_data_split_name}_loader') is None:
             raise ValueError(
-                f"No {target_data_split_name}_data or {target_data_split_name}_loader in the trainer"
+                f'No {target_data_split_name}_data or {target_data_split_name}_loader in the trainer'
             )
-        self._run_routine("train", hooks_set, target_data_split_name)
+        self._run_routine('train', hooks_set, target_data_split_name)
 
         return self.ctx.num_samples_train, self.get_model_para(), self.get_model_grads(), self.ctx.eval_metrics
-
-    def _hook_on_fit_start_init(self, ctx):
-        super()._hook_on_fit_start_init(ctx)
-        setattr(ctx, 'model_grads', [])
-        setattr(ctx, 'num_grad_accum', 0)
 
     def _hook_on_batch_forward(self, ctx):
         if self.task == 'pretrain':
@@ -164,18 +126,16 @@ class PFedNLPTrainer(FedNLPTrainer):
                 attention_mask=attention_mask.to(ctx.device),
                 labels=labels.to(ctx.device),
                 pretrain_task=self.pretrain_task,
-                config=ctx.cfg,
             )
-
             ctx.batch_size = len(token_ids)
             ctx.loss_batch = outputs.loss
             if self.pretrain_task == 'mlm':
                 ctx.y_true = labels
             elif self.pretrain_task == 'denoise':
-                ctx.y_true = labels[:, 1:].contiguous().view(-1)
+                ctx.y_true = labels[:, 1:]
             count_idx = ctx.y_true.ne(-100) & ctx.y_true.ne(ctx.padding_idx)
             ctx.y_true = ctx.y_true[count_idx]
-            ctx.y_prob = outputs.logits[count_idx]
+            ctx.y_pred = outputs.logits.argmax(dim=-1)[count_idx]
 
         else:
             token_ids = ctx.data_batch.get('token_ids', None)
@@ -192,13 +152,11 @@ class PFedNLPTrainer(FedNLPTrainer):
                     token_type_ids=token_type_ids.to(ctx.device),
                     attention_mask=attention_mask.to(ctx.device),
                     labels=labels.to(ctx.device),
-                    config=ctx.cfg,
                 )
-
                 ctx.batch_size = len(token_ids)
                 ctx.loss_batch = outputs.loss
                 ctx.y_true = labels
-                ctx.y_prob = outputs.logits
+                ctx.y_pred = outputs.logits.argmax(dim=-1)
 
             elif self.task in {'squad', 'newsqa'}:
                 outputs = ctx.model(
@@ -207,9 +165,7 @@ class PFedNLPTrainer(FedNLPTrainer):
                     attention_mask=attention_mask.to(ctx.device),
                     start_positions=start_positions.to(ctx.device),
                     end_positions=end_positions.to(ctx.device),
-                    config=ctx.cfg,
                 )
-
                 for i, example_idx in enumerate(example_indices):
                     encoded_input = ctx.get('{}_encoded'.format(ctx.cur_data_split))[example_idx.item()]
                     unique_id = int(encoded_input.unique_id)
@@ -226,23 +182,49 @@ class PFedNLPTrainer(FedNLPTrainer):
                 ctx.batch_size = len(token_ids)
                 ctx.loss_batch = outputs.loss
                 ctx.y_true = torch.cat([start_positions, end_positions])
-                ctx.y_prob = torch.cat(outputs.logits)
+                ctx.y_pred = torch.cat([out.argmax(dim=-1) for out in outputs.logits])
 
             elif self.task in {'cnndm', 'msqg'}:
-                outputs = ctx.model(
-                    input_ids=token_ids.to(ctx.device),
-                    token_type_ids=token_type_ids.to(ctx.device),
-                    attention_mask=attention_mask.to(ctx.device),
-                    labels=labels.to(ctx.device),
-                    config=ctx.cfg,
-                )
+                if ctx.cur_data_split != 'test':
+                    outputs = ctx.model(
+                        input_ids=token_ids.to(ctx.device),
+                        token_type_ids=token_type_ids.to(ctx.device),
+                        attention_mask=attention_mask.to(ctx.device),
+                        labels=labels.to(ctx.device),
+                    )
+                    ctx.batch_size = len(labels)
+                    ctx.loss_batch = outputs.loss
+                    ctx.y_pred = outputs.logits.argmax(dim=-1)
+                    ctx.y_true = labels[:, 1:]
+                    non_padding_idx = ctx.y_true.ne(ctx.padding_idx)
+                    ctx.y_true = ctx.y_true[non_padding_idx]
+                    ctx.y_pred = ctx.y_pred[non_padding_idx]
 
-                ctx.batch_size = len(labels)
-                ctx.loss_batch = outputs.loss
-                ctx.y_true = labels[:, 1:].contiguous().view(-1)
-                non_padding_idx = ctx.y_true.ne(ctx.padding_idx)
-                ctx.y_true = ctx.y_true[non_padding_idx]
-                ctx.y_prob = outputs.logits[non_padding_idx]
+                else:
+                    outputs = ctx.model.generate(
+                        input_ids=token_ids.to(ctx.device),
+                        token_type_ids=token_type_ids.to(ctx.device),
+                        attention_mask=attention_mask.to(ctx.device),
+                    )
+                    # save to file
+                    out_str = ctx.tokenizer.batch_decode(outputs)
+                    src_str = ctx.tokenizer.batch_decode(token_ids)
+                    ref_str = ctx.tokenizer.batch_decode(labels)
+                    for out, src, ref in zip(out_str, src_str, ref_str):
+                        out = self._remove_special_tokens(out)
+                        src = self._remove_special_tokens(src)
+                        ref = self._remove_special_tokens(ref)
+                        self.pred_file.write(out + '\n')
+                        self.src_file.write(src + '\n')
+                        self.tgt_file.write(ref + '\n')
+                    self.pred_file.flush()
+                    self.src_file.flush()
+                    self.tgt_file.flush()
+
+                    ctx.batch_size = len(labels)
+                    ctx.y_pred = outputs
+                    ctx.y_true = labels[:, 1:]
+                    return
 
         ctx.get('loss_agg_{}'.format(ctx.cur_data_split)).update(ctx.loss_batch.detach().item(), ctx.batch_size)
 
@@ -252,71 +234,55 @@ class PFedNLPTrainer(FedNLPTrainer):
         ctx.loss_task = ctx.loss_task / ctx.grad_accum_count
         ctx.loss_task.backward()
 
-        grad_clip, optimizer, scheduler = ctx.grad_clip, ctx.optimizer, ctx.scheduler
-        if self.task == 'pretrain':
-            grad_clip, optimizer, scheduler = grad_clip[self.pretrain_task], optimizer[self.pretrain_task], \
-                                              scheduler[self.pretrain_task]
-
         if ctx.accum_steps == ctx.grad_accum_count:
-            if grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(ctx.model.parameters(), grad_clip)
-            if ctx.cfg.federate.method not in ['local', 'global']:
-                self._get_grads(ctx, optimizer)
-            for o, s in zip(optimizer, scheduler):
-                o.step()
-                s.step()
-                o.zero_grad()
+            if ctx.grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(ctx.model.parameters(), ctx.grad_clip)
+            ctx.optimizer.step()
+            ctx.scheduler.step()
+            ctx.optimizer.zero_grad()
             ctx.accum_steps = 0
 
         if cur_step > 0 and ctx.accum_steps == 0:
             if cur_step > 1 and (cur_step % ctx.cfg.trainer.disp_freq == 0 or ctx.cur_batch_i + 1 == ctx.num_train_batch):
                 y_true = ctx.y_true.detach().cpu().numpy()
-                y_prob = ctx.y_prob.detach().cpu().numpy()
+                y_pred = ctx.y_pred.detach().cpu().numpy()
                 if y_true.ndim == 1:
                     y_true = np.expand_dims(y_true, axis=-1)
-                if y_prob.ndim == 2:
-                    y_prob = np.expand_dims(y_prob, axis=1)
-                y_pred = np.argmax(y_prob, axis=-1)
+                if y_pred.ndim == 1:
+                    y_pred = np.expand_dims(y_pred, axis=-1)
                 cur_acc = eval_acc(y_true, y_pred)
 
+                log_str = 'Epoch: [{}/{}][{}/{}]\t' \
+                          'LR: {:.2e}\t' \
+                          'Acc: {:.4f}\t' \
+                          'Loss: {loss.val:.4f} ({loss.avg:.4f})'.format(ctx.cur_epoch_i + 1,
+                                                                         ctx.num_train_epoch,
+                                                                         cur_step,
+                                                                         ctx.cfg.trainer.train_steps,
+                                                                         ctx.scheduler.get_last_lr()[0],
+                                                                         cur_acc,
+                                                                         loss=ctx.get('loss_agg_{}'.format(ctx.cur_data_split)))
+
+                if ctx.get('regular_loss_batch', None) is not None and ctx.get('contrast_loss_batch', None) is not None:
+                    log_str += '\tRegular loss: {loss.val:.4f} ({loss.avg:.4f})'.format(
+                        loss=ctx.get('regular_loss_agg_{}'.format(ctx.cur_data_split)))
+                    log_str += '\tContrastive loss: {loss.val:.4f} ({loss.avg:.4f})'.format(
+                        loss=ctx.get('contrast_loss_agg_{}'.format(ctx.cur_data_split)))
                 if self.task == 'pretrain':
-                    logger.info('Epoch: [{}/{}][{}/{}]\t'
-                                'LR: {:.2e}\t'
-                                'Acc: {:.4f}\t'
-                                'Loss: {loss.val:.4f} ({loss.avg:.4f})\t'
-                                '({task})'
-                                .format(ctx.cur_epoch_i + 1,
-                                        ctx.num_train_epoch,
-                                        cur_step,
-                                        ctx.cfg.trainer.train_steps,
-                                        ctx.scheduler[self.pretrain_task][0].get_last_lr()[0],
-                                        cur_acc,
-                                        loss=ctx.get('loss_agg_{}'.format(ctx.cur_data_split)),
-                                        task=self.pretrain_task))
-                else:
-                    logger.info('Epoch: [{}/{}][{}/{}]\t'
-                                'LR: {:.2e}\t'
-                                'Acc: {:.4f}\t'
-                                'Loss: {loss.val:.4f} ({loss.avg:.4f})'
-                                .format(ctx.cur_epoch_i + 1,
-                                        ctx.num_train_epoch,
-                                        cur_step,
-                                        ctx.cfg.trainer.train_steps,
-                                        ctx.scheduler[0].get_last_lr()[0],
-                                        cur_acc,
-                                        loss=ctx.get('loss_agg_{}'.format(ctx.cur_data_split))))
+                    log_str += '\t({})'.format(self.pretrain_task)
+                logger.info(log_str)
 
             if ctx.cur_batch_i + 1 == ctx.num_train_batch:
-                # if ctx.cfg.federate.method == 'local':
-                #     self._test(ctx)
                 if ctx.cfg.federate.save_to:
                     self._save_model(ctx)
 
 
 def call_pfednlp_trainer(trainer_type):
-    if trainer_type == 'pfednlp_trainer':
+    if trainer_type in {'pfednlp_trainer', 'spfl_trainer', 'percfl_trainer'}:
         trainer_builder = PFedNLPTrainer
         return trainer_builder
 
 
 register_trainer('pfednlp_trainer', call_pfednlp_trainer)
+register_trainer('spfl_trainer', call_pfednlp_trainer)
+register_trainer('percfl_trainer', call_pfednlp_trainer)

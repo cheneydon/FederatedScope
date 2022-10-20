@@ -19,7 +19,7 @@ def get_client_cls(cfg):
         from federatedscope.nlp.worker import FedNLPClient
         return FedNLPClient
 
-    if cfg.trainer.type == 'pfednlp_trainer':
+    if cfg.trainer.type in {'pfednlp_trainer', 'spfl_trainer', 'percfl_trainer'}:
         from federatedscope.nlp.worker import PFedNLPClient
         return PFedNLPClient
 
@@ -79,7 +79,7 @@ def get_server_cls(cfg):
         from federatedscope.nlp.worker import FedNLPServer
         return FedNLPServer
 
-    if cfg.trainer.type == 'pfednlp_trainer':
+    if cfg.trainer.type in {'pfednlp_trainer', 'spfl_trainer', 'percfl_trainer'}:
         from federatedscope.nlp.worker import PFedNLPServer
         return PFedNLPServer
 

@@ -2,6 +2,7 @@ import copy
 
 from federatedscope.core.trainers.trainer import GeneralTorchTrainer
 from federatedscope.core.optimizer import wrap_regularized_optimizer
+from federatedscope.core.auxiliaries.scheduler_builder import get_scheduler
 from typing import Type
 
 
@@ -74,6 +75,13 @@ def init_pFedMe_ctx(base_trainer):
         g['lr'] = cfg.personalization.lr
     ctx.pFedMe_outer_lr = cfg.optimizer.lr
 
+    num_steps = cfg.trainer.train_steps * cfg.federate.total_round_num * ctx.pFedMe_K
+    ctx.scheduler = get_scheduler(
+        cfg.scheduler.type,
+        ctx.optimizer,
+        total_steps=num_steps,
+        warmup_steps=int(cfg.scheduler.warmup_ratio * num_steps))
+
 
 def hook_on_fit_start_set_local_para_tmp(ctx):
     ctx.pFedMe_local_model_tmp = copy.deepcopy(ctx.model)
@@ -85,14 +93,21 @@ def hook_on_fit_start_set_local_para_tmp(ctx):
 
 
 def hook_on_batch_start_init_pfedme(ctx):
+    if ctx.cur_mode != "train":
+        for hook in ctx.original_hook_on_batch_start_eval:
+            hook(ctx)
+        return
+
     # refresh data every K step
     if ctx.pFedMe_approx_fit_counter == 0:
-        if ctx.cur_mode == "train":
-            for hook in ctx.original_hook_on_batch_start_train:
-                hook(ctx)
-        else:
-            for hook in ctx.original_hook_on_batch_start_eval:
-                hook(ctx)
+        for hook in ctx.original_hook_on_batch_start_train:
+            hook(ctx)
+        # if ctx.cur_mode == "train":
+        #     for hook in ctx.original_hook_on_batch_start_train:
+        #         hook(ctx)
+        # else:
+        #     for hook in ctx.original_hook_on_batch_start_eval:
+        #         hook(ctx)
         ctx.data_batch_cache = copy.deepcopy(ctx.data_batch)
     else:
         # reuse the data_cache since the original hook `_hook_on_batch_end` will clean `data_batch`

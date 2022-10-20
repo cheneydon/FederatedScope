@@ -22,24 +22,24 @@ class AverageMeter(object):
 
 
 class ContrastiveMonitor(object):
-    def __init__(self, stat=0, enc_hidden=None, mlm_head_params=None, synth_tokens=None,
-                 dec_hidden=None, dec_out=None, group_ids=None):
+    def __init__(self, stat=1, enc_hidden=None, synth_tokens=None,
+                 dec_hidden=None, dec_out=None, all_group_ids=None, topk_group_ids=None):
         self.stat = stat
         self.enc_hidden = enc_hidden
-        self.mlm_head_params = mlm_head_params
         self.synth_tokens = synth_tokens
         self.dec_hidden = dec_hidden
         self.dec_out = dec_out
-        self.group_ids = group_ids
+        self.all_group_ids = all_group_ids
+        self.topk_group_ids = topk_group_ids
 
     def update_stat(self, status):
         self.stat = status
 
-    def update_mlm_head_params(self, mlm_head_params):
-        self.mlm_head_params = mlm_head_params
+    def update_all_group_ids(self, group_ids):
+        self.all_group_ids = group_ids
 
-    def update_group_ids(self, group_ids):
-        self.group_ids = group_ids
+    def update_topk_group_ids(self, group_ids):
+        self.topk_group_ids = group_ids
 
     def update_enc_hidden(self, enc_hidden, k=None):
         if k is None:
@@ -74,27 +74,24 @@ class ContrastiveMonitor(object):
             self.dec_out[k] = dec_out
 
     def reset(self):
-        self.stat = 0
-        self.enc_hidden = None
-        self.mlm_head_params = None
-        self.synth_tokens = None
+        self.stat = 1
         self.dec_hidden = None
         self.dec_out = None
         self.group_ids = None
 
 
-def setup_tokenizer(model_type):
-    bos_token, eos_token, eoq_token = '[unused0]', '[unused1]', '[unused2]'
+def setup_tokenizer(config):
+    bos_token, eos_token, eoq_token = config.model.bos_token, config.model.eos_token, config.model.eoq_token
     try:
         tokenizer = BertTokenizerFast.from_pretrained(
-            model_type,
+            config.model.model_type,
             additional_special_tokens=[bos_token, eos_token, eoq_token],
             skip_special_tokens=True,
             local_files_only=True,
         )
     except:
         tokenizer = BertTokenizerFast.from_pretrained(
-            model_type,
+            config.model.model_type,
             additional_special_tokens=[bos_token, eos_token, eoq_token],
             skip_special_tokens=True,
         )
@@ -104,6 +101,4 @@ def setup_tokenizer(model_type):
     tokenizer.bos_token_id = tokenizer.vocab[bos_token]
     tokenizer.eos_token_id = tokenizer.vocab[eos_token]
     tokenizer.eoq_token_id = tokenizer.vocab[eoq_token]
-    tokenizer.symbols = {'BOS': tokenizer.bos_token_id, 'EOS': tokenizer.eos_token_id,
-                         'PAD': tokenizer.pad_token_id, 'EOQ': tokenizer.eoq_token_id}
     return tokenizer

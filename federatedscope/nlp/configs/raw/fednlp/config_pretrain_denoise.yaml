@@ -39,7 +39,7 @@ scheduler:
   warmup_ratio_dec: 0.2
 model:
   type: fednlp_model
-  bert_type: huawei-noah/TinyBERT_General_4L_312D
+  model_type: huawei-noah/TinyBERT_General_4L_312D
   num_dec_layers: 2
 trainer:
   type: fednlp_trainer

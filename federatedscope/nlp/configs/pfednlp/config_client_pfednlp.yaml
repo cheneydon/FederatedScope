@@ -1,106 +1,94 @@
-client_1:
-  federate:
-    local_update_steps: 1
+client_group_1:
   data:
+    batch_size: 32
+    max_seq_len: 128
+  model:
     task: imdb
-  optimizer:
-    type: AdamW
-    lr: 3e-5
-    weight_decay: 0.01
-    grad_clip: 1.0
-  scheduler:
-    type: step
-    warmup_ratio: 0.1
+    num_labels: 2
   trainer:
-    train_steps: 500
+    train_steps: 200
     grad_accum_count: 1
   eval:
     metrics: ['acc']
-client_2:
-  federate:
-    local_update_steps: 1
+client_group_2:
   data:
+    batch_size: 32
+    max_seq_len: 128
+  model:
     task: agnews
-  optimizer:
-    type: AdamW
-    lr: 3e-5
-    weight_decay: 0.01
-    grad_clip: 1.0
-  scheduler:
-    type: step
-    warmup_ratio: 0.1
+    num_labels: 4
   trainer:
-    train_steps: 500
+    train_steps: 200
     grad_accum_count: 1
   eval:
     metrics: ['acc']
-client_3:
-  federate:
-    local_update_steps: 1
+client_group_3:
   data:
+    batch_size: 32
+    max_seq_len: 384
+    max_query_len: 128
+    trunc_stride: 128
+  model:
     task: squad
-  optimizer:
-    type: AdamW
-    lr: 3e-5
-    weight_decay: 0.01
-    grad_clip: 1.0
-  scheduler:
-    type: step
-    warmup_ratio: 0.1
+    num_labels: 2
+    n_best_size: 20
+    max_answer_len: 30
+    null_score_diff_threshold: 0.0
   trainer:
-    train_steps: 500
+    train_steps: 200
     grad_accum_count: 1
   eval:
     metrics: ['squad']
+client_group_4:
+  data:
+    batch_size: 32
+    max_seq_len: 384
+    max_query_len: 128
+    trunc_stride: 128
+  model:
+    task: newsqa
+    num_labels: 2
     n_best_size: 20
     max_answer_len: 30
     null_score_diff_threshold: 0.0
-client_4:
-  federate:
-    local_update_steps: 1
-  data:
-    task: newsqa
-  optimizer:
-    type: AdamW
-    lr: 3e-5
-    weight_decay: 0.01
-    grad_clip: 1.0
-  scheduler:
-    type: step
-    warmup_ratio: 0.1
   trainer:
-    train_steps: 500
+    train_steps: 200
     grad_accum_count: 1
   eval:
     metrics: ['newsqa']
-    n_best_size: 20
-    max_answer_len: 30
-    null_score_diff_threshold: 0.0
-client_5:
-  federate:
-    local_update_steps: 1
-  model:
-    label_smoothing: 0.1
+client_group_5:
   data:
+    batch_size: 32
+    max_seq_len: 384
+    max_tgt_len: 128
+  model:
     task: cnndm
-  optimizer:
-    type: AdamW
-    lr_enc: 0.002
-    lr_dec: 0.2
-    weight_decay: 0.0
-    grad_clip: 0.0
-  scheduler:
-    type: noam
-    warmup_ratio_enc: 0.4
-    warmup_ratio_dec: 0.2
+    max_length: 150
+    min_length: 50
+    no_repeat_ngram_size: 3
+    length_penalty: 2.0
+    num_beams: 5
+    label_smoothing: 0.1
   trainer:
-    train_steps: 500
-    grad_accum_count: 2
+    train_steps: 200
+    grad_accum_count: 1
   eval:
     metrics: ['cnndm']
-  test:
-    beam_size: 5
-    min_length: 50
-    max_length: 200
-    block_trigram: True
-    alpha: 0.95
+client_group_6:
+  data:
+    batch_size: 32
+    max_seq_len: 384
+    max_tgt_len: 64
+  model:
+    task: msqg
+    max_length: 100
+    min_length: 1
+    no_repeat_ngram_size: 3
+    length_penalty: 2.0
+    num_beams: 5
+    label_smoothing: 0.1
+  trainer:
+    train_steps: 200
+    grad_accum_count: 1
+  eval:
+    metrics: ['msqg']

@@ -14,6 +14,7 @@ from federatedscope.core.auxiliaries.utils import setup_seed, update_logger
 from federatedscope.core.auxiliaries.worker_builder import get_client_cls, get_server_cls
 from federatedscope.core.configs.config import global_cfg, CN
 from federatedscope.core.fed_runner import FedRunner
+from federatedscope.nlp.trainer.utils import setup_tokenizer
 
 if os.environ.get('https_proxy'):
     del os.environ['https_proxy']
@@ -35,7 +36,7 @@ def extend_cfg_client(init_cfg, cfg_client):
         num_clients = init_cfg.federate.client_num
         for i in range(1, num_clients + 1):
             cfg = cfg_client['client_{}'.format(i)]
-            cfg.data.batch_size = init_cfg.data.all_batch_size[cfg.data.task]
+            cfg.data.batch_size = init_cfg.data.all_batch_size[cfg.model.task]
             if init_cfg.data.debug:
                 cfg.trainer.train_steps = 5
     else:
@@ -43,7 +44,6 @@ def extend_cfg_client(init_cfg, cfg_client):
         client_start_id = 1
         for group_id, num_clients in enumerate(num_grouped_clients):
             group_cfg = cfg_client['client_group_{}'.format(group_id + 1)]
-            group_cfg.data.batch_size = init_cfg.data.all_batch_size[group_cfg.data.task]
             if init_cfg.data.debug:
                 group_cfg.trainer.train_steps = 5
             for client_id in range(client_start_id, client_start_id + num_clients):
@@ -55,29 +55,44 @@ def extend_cfg_client(init_cfg, cfg_client):
 
 def extend_cfg(cfg):
     cfg.test.result_path = cfg.outdir
-    cfg.test.temp_dir = osp.join(cfg.outdir, cfg.test.temp_dir)
+    cfg.test.temp_dir = osp.join(cfg.outdir, 'temp')
     os.makedirs(cfg.test.temp_dir, exist_ok=True)
     if cfg.federate.save_to:
         cfg.federate.save_to = osp.join(cfg.outdir, cfg.federate.save_to)
-        save_dir = '/'.join(osp.normpath(cfg.federate.save_to).split('/')[:-1])
+        save_dir = cfg.federate.save_to
         os.makedirs(save_dir, exist_ok=True)
 
-    if cfg.federate.num_grouped_clients is not None and cfg.data.task == 'pretrain':
-        downstream_tasks = []
-        num_grouped_clients = cfg.federate.num_grouped_clients
-        for group_id, num_clients in enumerate(num_grouped_clients):
-            downstream_tasks += [cfg.data.downstream_tasks[group_id]] * num_clients
-        cfg.data.downstream_tasks = downstream_tasks
+    if cfg.federate.num_grouped_clients is not None:
+        if cfg.model.task == 'pretrain':
+            downstream_tasks = []
+            for group_id, num_clients in enumerate(cfg.federate.num_grouped_clients):
+                downstream_tasks += [cfg.model.downstream_tasks[group_id]] * num_clients
+            cfg.model.downstream_tasks = downstream_tasks
+        elif cfg.aggregator.num_agg_topk is not None:
+            num_agg_topk = []
+            for group_id, num_clients in enumerate(cfg.federate.num_grouped_clients):
+                if isinstance(cfg.aggregator.num_agg_topk, list):
+                    num_agg_topk += [cfg.aggregator.num_agg_topk[group_id]] * num_clients
+                else:
+                    num_agg_topk += [cfg.aggregator.num_agg_topk] * num_clients
+            cfg.aggregator.num_agg_topk = num_agg_topk
 
-    if init_cfg.data.debug:
-        if init_cfg.federate.total_round_num > 5:
-            init_cfg.federate.total_round_num = 5
-        # if init_cfg.federate.client_num > 5:
-        #     init_cfg.federate.client_num = 5
-        #     init_cfg.aggregator.num_agg_groups = 1
-        # init_cfg.federate.save_to = ''
-        init_cfg.data.cache_dir = ''
-        init_cfg.trainer.train_steps = 5
+    tokenizer = setup_tokenizer(cfg)
+    cfg.model.bos_token_id = tokenizer.bos_token_id
+    cfg.model.eos_token_id = tokenizer.eos_token_id
+    cfg.model.eoq_token_id = tokenizer.eoq_token_id
+    cfg.model.pad_token_id = tokenizer.pad_token_id
+
+    if cfg.data.debug:
+        if cfg.federate.total_round_num > 5:
+            cfg.federate.total_round_num = 5
+        if cfg.federate.client_num > 5:
+            cfg.federate.client_num = 5
+        cfg.federate.save_to = ''
+        if cfg.data.num_contrast is not None and cfg.data.num_contrast > 20:
+            cfg.data.num_contrast = 20
+        cfg.data.cache_dir = ''
+        cfg.trainer.train_steps = 5
 
     return cfg
 

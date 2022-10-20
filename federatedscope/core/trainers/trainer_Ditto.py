@@ -74,51 +74,30 @@ def init_Ditto_ctx(base_trainer):
     #     cfg.personalization.lr,
     #     weight_decay=cfg.optimizer.weight_decay)
 
-    if cfg.data.task == 'cnndm':
-        ctx.optimizer_for_global_model = get_optimizer(
-            cfg.optimizer.type,
-            ctx.global_model,
-            [cfg.optimizer.lr_enc, cfg.optimizer.lr_dec],
-            weight_decay=cfg.optimizer.weight_decay,
-            max_grad_norm=cfg.optimizer.grad_clip,
-            warmup_steps_enc=int(cfg.optimizer.warmup_steps_enc * 0.25),
-            warmup_steps_dec=int(cfg.optimizer.warmup_steps_dec * 0.25))
-        ctx.optimizer_for_local_model = get_optimizer(
-            cfg.optimizer.type,
-            ctx.local_model,
-            [cfg.optimizer.lr_enc, cfg.optimizer.lr_dec],
-            weight_decay=cfg.optimizer.weight_decay,
-            max_grad_norm=cfg.optimizer.grad_clip,
-            warmup_steps_enc=int(cfg.optimizer.warmup_steps_enc * 0.75),
-            warmup_steps_dec=int(cfg.optimizer.warmup_steps_dec * 0.75))
+    ctx.optimizer_for_global_model = get_optimizer(
+        cfg.optimizer.type,
+        ctx.global_model,
+        cfg.optimizer.lr,
+        weight_decay=cfg.optimizer.weight_decay)
+    ctx.optimizer_for_local_model = get_optimizer(
+        cfg.optimizer.type,
+        ctx.local_model,
+        cfg.optimizer.lr,
+        weight_decay=cfg.optimizer.weight_decay)
 
-        ctx.scheduler_for_global_model = None
-        ctx.scheduler_for_local_model = None
-    else:
-        ctx.optimizer_for_global_model = get_optimizer(
-            cfg.optimizer.type,
-            ctx.global_model,
-            cfg.optimizer.lr,
-            weight_decay=cfg.optimizer.weight_decay)
-        ctx.optimizer_for_local_model = get_optimizer(
-            cfg.optimizer.type,
-            ctx.local_model,
-            cfg.optimizer.lr,
-            weight_decay=cfg.optimizer.weight_decay)
+    assert cfg.trainer.train_steps is not None
+    num_steps = cfg.trainer.train_steps * cfg.federate.total_round_num
 
-        assert cfg.trainer.train_steps is not None
-        num_steps = cfg.trainer.train_steps * cfg.federate.total_round_num
-
-        ctx.scheduler_for_global_model = get_scheduler(
-            cfg.scheduler.type,
-            ctx.optimizer_for_global_model,
-            total_steps=num_steps,
-            warmup_steps=int(cfg.scheduler.warmup_ratio * num_steps))
-        ctx.scheduler_for_local_model = get_scheduler(
-            cfg.scheduler.type,
-            ctx.optimizer_for_local_model,
-            total_steps=num_steps * 3,
-            warmup_steps=int(cfg.scheduler.warmup_ratio * num_steps * 3))
+    ctx.scheduler_for_global_model = get_scheduler(
+        cfg.scheduler.type,
+        ctx.optimizer_for_global_model,
+        total_steps=num_steps,
+        warmup_steps=int(cfg.scheduler.warmup_ratio * num_steps))
+    ctx.scheduler_for_local_model = get_scheduler(
+        cfg.scheduler.type,
+        ctx.optimizer_for_local_model,
+        total_steps=num_steps * 3,
+        warmup_steps=int(cfg.scheduler.warmup_ratio * num_steps * 3))
 
     ctx.optimizer_for_local_model = wrap_regularized_optimizer(
         ctx.optimizer_for_local_model, cfg.personalization.regular_weight)
@@ -145,21 +124,8 @@ def hook_on_fit_start_set_regularized_para(ctx):
     ctx.global_model.train()
     ctx.local_model.train()
 
-    if isinstance(ctx.optimizer_for_local_model, list):
-        compared_global_model_para_enc = [{
-            "params": [p for n, p in list(ctx.global_model.named_parameters()) if n.startswith('encoder')]
-        }]
-        compared_global_model_para_dec = [{
-            "params": [p for n, p in list(ctx.global_model.named_parameters()) if not n.startswith('encoder')]
-        }]
-        ctx.optimizer_for_local_model[0].set_compared_para_group(compared_global_model_para_enc)
-        ctx.optimizer_for_local_model[1].set_compared_para_group(compared_global_model_para_dec)
-    else:
-        compared_global_model_para = [{
-            "params": list(ctx.global_model.parameters())
-        }]
-        ctx.optimizer_for_local_model.set_compared_para_group(
-            compared_global_model_para)
+    compared_global_model_para = [{"params": list(ctx.global_model.parameters())}]
+    ctx.optimizer_for_local_model.set_compared_para_group(compared_global_model_para)
 
 
 def hook_on_batch_start_switch_model(ctx):

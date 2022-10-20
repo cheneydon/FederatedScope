@@ -129,16 +129,20 @@ def main():
                  'newsqa': '/mnt/dongchenhe.dch/datasets/newsqa/',
                  'cnndm': '/mnt/dongchenhe.dch/datasets/glge/cnndm/',
                  'msqg': '/mnt/dongchenhe.dch/datasets/glge/msqg/'}
-    save_dir = '/mnt/dongchenhe.dch/datasets/fednlp/v5/'
-    num_clients = {'imdb': 1,
-                   'agnews': 3,
-                   'squad': 3,
-                   'newsqa': 2,
-                   'cnndm': 5,
-                   'msqg': 4}
+    save_dir = '/mnt/dongchenhe.dch/datasets/fednlp/st/nlg/'
+    num_clients = {
+        # 'imdb': 1,
+        # 'agnews': 3,
+        # 'squad': 3,
+        # 'newsqa': 2,
+        'cnndm': 5,
+        'msqg': 4,
+    }
 
     client_id = 1
     for task, root in data_root.items():
+        if task not in num_clients:
+            continue
         load_data(task, root, 'train', save_dir,
                   num_clients=num_clients,
                   client_id=client_id)

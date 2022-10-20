@@ -49,6 +49,10 @@ class FedRunner(object):
         """
         To set up server and client for standalone mode.
         """
+        if self.cfg.backend == 'torch':
+            import torch
+            torch.set_num_threads(1)
+
         self.server = self._setup_server()
 
         self.client = dict()
@@ -220,7 +224,8 @@ class FedRunner(object):
             # Modify the setting according to self.cfg_client in standalone mode
             if self.cfg_client is not None:
                 client_specific_config.defrost()
-                client_specific_config.merge_from_other_cfg(self.cfg_client.get('client_{}'.format(client_id)))
+                client_specific_config.merge_from_other_cfg(
+                    self.cfg_client.get('client_{}'.format(client_id)))
                 client_specific_config.freeze()
 
             client = self.client_class(
@@ -229,7 +234,7 @@ class FedRunner(object):
                 config=client_specific_config,
                 data=client_data,
                 model=client_model or get_model(
-                    self.cfg.model, client_data, backend=self.cfg.backend),
+                    client_specific_config.model, client_data, backend=client_specific_config.backend),
                 device=self.gpu_manager.auto_choice(),
                 **kw)
         else:

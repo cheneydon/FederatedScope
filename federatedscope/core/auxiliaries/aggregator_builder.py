@@ -20,6 +20,14 @@ def get_aggregator(method, model=None, device=None, online=False, config=None):
         from federatedscope.core.aggregator import PFedNLPContrastAggregator
         return PFedNLPContrastAggregator(model=model, config=config, device=device)
 
+    if config.trainer.type == 'spfl_trainer':
+        from federatedscope.core.aggregator import SPFLAggregator
+        return SPFLAggregator(model=model, config=config, device=device)
+
+    if config.trainer.type == 'percfl_trainer':
+        from federatedscope.core.aggregator import PerCFLAggregator
+        return PerCFLAggregator(model=model, config=config, device=device)
+
     if method.lower() in constants.AGGREGATOR_TYPE:
         aggregator_type = constants.AGGREGATOR_TYPE[method.lower()]
     else:
